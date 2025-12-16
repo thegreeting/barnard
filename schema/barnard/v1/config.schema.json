@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thegreeting.github.io/barnard/schema/barnard/v1/config.schema.json",
+  "title": "Barnard Config (v1)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "transport": { "$ref": "common.schema.json#/$defs/TransportKind" },
+    "rpid": { "$ref": "#/$defs/RpidConfig" },
+    "rssi": { "$ref": "#/$defs/RssiConfig" },
+    "connect": { "$ref": "#/$defs/ConnectConfig" }
+  },
+  "required": ["transport", "rpid", "rssi", "connect"],
+  "$defs": {
+    "RpidConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rotationSeconds": { "type": "integer", "minimum": 1 },
+        "minRotationSeconds": { "type": "integer", "minimum": 1 },
+        "maxRotationSeconds": { "type": "integer", "minimum": 1 },
+        "epochOffsetSeconds": { "type": ["integer", "null"], "minimum": 0 }
+      },
+      "required": ["rotationSeconds", "minRotationSeconds", "maxRotationSeconds", "epochOffsetSeconds"]
+    },
+    "RssiConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "minPushIntervalMs": { "type": "integer", "minimum": 0 },
+        "bufferMaxSamples": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["minPushIntervalMs", "bufferMaxSamples"]
+    },
+    "ConnectConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enableGattFallback": { "type": "boolean" },
+        "maxConcurrentConnections": { "type": "integer", "minimum": 1 },
+        "cooldownPerPeerSeconds": { "type": "integer", "minimum": 0 },
+        "connectBudgetPerMinute": { "type": "integer", "minimum": 0 },
+        "maxConnectQueue": { "type": "integer", "minimum": 0 }
+      },
+      "required": [
+        "enableGattFallback",
+        "maxConcurrentConnections",
+        "cooldownPerPeerSeconds",
+        "connectBudgetPerMinute",
+        "maxConnectQueue"
+      ]
+    }
+  }
+}
+

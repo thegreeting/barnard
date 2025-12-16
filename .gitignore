@@ -3,3 +3,13 @@
 # codex
 .codex/*
 !.codex/prompts
+
+# Dart / Flutter
+.dart_tool/
+.packages
+pubspec.lock
+build/
+coverage/
+.idea/
+.flutter-plugins
+.flutter-plugins-dependencies

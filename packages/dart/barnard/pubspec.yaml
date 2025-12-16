@@ -1,0 +1,13 @@
+name: barnard
+description: Barnard SDK for Flutter/Dart (public API + mock implementation for early integration).
+version: 0.0.1-alpha.1
+repository: https://github.com/thegreeting/barnard
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  meta: ^1.11.0
+
+dev_dependencies:
+  test: ^1.25.0

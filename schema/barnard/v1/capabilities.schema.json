@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thegreeting.github.io/barnard/schema/barnard/v1/capabilities.schema.json",
+  "title": "Barnard Capabilities (v1)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "supportedTransports": {
+      "type": "array",
+      "items": { "$ref": "common.schema.json#/$defs/TransportKind" },
+      "minItems": 1
+    },
+    "supportsConnectionlessRpid": { "type": "boolean" },
+    "supportsGattFallback": { "type": "boolean" },
+    "supportsBackground": { "type": "boolean" },
+    "supportsHighRateRssi": { "type": "boolean" }
+  },
+  "required": [
+    "supportedTransports",
+    "supportsConnectionlessRpid",
+    "supportsGattFallback",
+    "supportsBackground",
+    "supportsHighRateRssi"
+  ]
+}
+

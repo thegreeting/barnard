@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thegreeting.github.io/barnard/schema/barnard/v1/events.schema.json",
+  "title": "Barnard Events (v1)",
+  "oneOf": [
+    { "$ref": "#/$defs/DetectionEvent" },
+    { "$ref": "#/$defs/StateEvent" },
+    { "$ref": "#/$defs/ConstraintEvent" },
+    { "$ref": "#/$defs/ErrorEvent" },
+    { "$ref": "#/$defs/DebugEvent" }
+  ],
+  "$defs": {
+    "DetectionEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "detection" },
+        "timestamp": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "transport": { "$ref": "common.schema.json#/$defs/TransportKind" },
+        "formatVersion": { "type": "integer", "minimum": 0 },
+        "rpid": { "$ref": "common.schema.json#/$defs/RpidBytes" },
+        "displayId": { "type": "string", "minLength": 1 },
+        "rssi": { "type": "integer" },
+        "rssiSummary": { "$ref": "#/$defs/RssiSummary" },
+        "payloadRaw": { "type": ["string", "null"], "contentEncoding": "base64" }
+      },
+      "required": ["type", "timestamp", "transport", "formatVersion", "rpid", "displayId", "rssi"]
+    },
+    "RssiSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "count": { "type": "integer", "minimum": 0 },
+        "min": { "type": "integer" },
+        "max": { "type": "integer" },
+        "mean": { "type": "number" }
+      },
+      "required": ["count", "min", "max", "mean"]
+    },
+    "StateEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "state" },
+        "timestamp": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "state": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "isScanning": { "type": "boolean" },
+            "isAdvertising": { "type": "boolean" }
+          },
+          "required": ["isScanning", "isAdvertising"]
+        },
+        "reasonCode": { "type": ["string", "null"] }
+      },
+      "required": ["type", "timestamp", "state"]
+    },
+    "ConstraintEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "constraint" },
+        "timestamp": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": ["string", "null"] },
+        "requiredAction": { "type": ["string", "null"] }
+      },
+      "required": ["type", "timestamp", "code"]
+    },
+    "ErrorEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "error" },
+        "timestamp": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 },
+        "recoverable": { "type": ["boolean", "null"] }
+      },
+      "required": ["type", "timestamp", "code", "message"]
+    },
+    "DebugEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "debug" },
+        "timestamp": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "level": { "$ref": "common.schema.json#/$defs/DebugLevel" },
+        "name": { "type": "string", "minLength": 1 },
+        "data": { "type": ["object", "null"], "additionalProperties": true }
+      },
+      "required": ["type", "timestamp", "level", "name"]
+    }
+  }
+}
+
