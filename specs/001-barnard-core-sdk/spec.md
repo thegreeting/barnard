@@ -1,335 +1,337 @@
-# Feature Specification: Barnard Core SDK（BLEセンシング基盤）
+# Feature Specification: Barnard Core SDK (BLE Sensing Foundation)
 
 **Feature Directory**: `specs/001-barnard-core-sdk`  
 **Created**: 2025-12-15  
 **Status**: Draft  
-**Input**: BLEセンシングのためのプラグイン／SDKを、Flutter以外（RN / iOS / Android）へも配布できる“ネイティブSDKコア”として再設計する。Barnard は BLE の Scan/Advertise とイベント（メイン＋デバッグ）提供までを責務とし、VC/POAP等のドメインロジックやサーバ依存、UIは非責務とする。
+**Input**: Redesign the BLE sensing plugin/SDK into a “native core SDK” that can be distributed beyond Flutter (RN / iOS / Android). Barnard’s responsibility is BLE Scan/Advertise and event delivery (main + debug). Domain logic (VC/POAP), server dependencies, and UI are out of scope.
 
-## Clarifications（確定した前提）
+## Assumptions (locked for this feature)
 
-本featureの検討において、以下を前提として確定する（2025-12-16時点）。
+These are fixed assumptions as of 2025-12-16.
 
-- Barnard は payload を **parseする責務を持つ**。加えて、RPID を生成し、ブロードキャストしつつセンシングする手続きを担う
-- payload には **デバイス固有IDのような永続識別子を含めない**
-- センシング結果として「現地の空間の環境データ」を各デバイス視点で記録したい  
-  → 検出イベントでは **RPID（payload由来） + RSSI（受信側測定値）** を必須で扱う
-- ここで言う「環境データ」は **受信側が観測した事実**（どの `rpid` を、どんな `rssi` で、いつ観測したか）のことを指し、接続先（相手端末）から追加データを受け取ることは前提にしない
-- OS差分（特に iOS のプライバシー/制約）を吸収し、上位に“判断可能な情報”として返す
-- プロトタイプ段階の動作保証範囲は **フォアグラウンドのみ**
-- プロトタイプ段階の scan/advertise は **ほぼ設定項目なし**（安全に倒したデフォルト）で開始できる
-- 同時に Scan + Advertise は **第一級機能（Autoモード）** とする
-- debugEvents は push + pull を用意し、保存はメモリバッファ（上限あり）。RSSIは平均だけではなく **サンプリング** を検討する
-- デバッグUI向けに、追跡リスクを増やさない形で短い `displayId`（例: RPID先頭の短縮表現）を提供してよい
+- Barnard **parses** the payload and also owns the procedure of generating RPID, advertising it, and sensing it
+- The on-wire payload MUST NOT include any device-unique persistent identifier
+- We want to record “environmental data” from each receiver’s perspective  
+  → Each detection MUST include **RPID (from payload) + RSSI (measured by receiver)**
+- “Environment data” here means **receiver-observed facts** (which `rpid` was observed, with which `rssi`, at which time). We do not assume any extra data is sent from the other device.
+- OS differences (especially iOS privacy/constraints) must be absorbed while returning decision-useful information to upper layers
+- Prototype support is **foreground-only**
+- Prototype Scan/Advertise should start with **almost no configuration** (safe defaults)
+- **Auto mode** (Scan + Advertise concurrently) is a first-class feature
+- `debugEvents` must support both push + pull, be stored in an in-memory buffer (bounded), and be rate-controlled (sampling/aggregation)
+- A short debug-only `displayId` (e.g., derived from RPID) is allowed as long as it does not increase tracking risk
 
-### Terminology（用語統一）
+### Terminology (do not translate)
 
-誤訳を避けるため、この仕様では専門用語を以下に統一する（以後は原則この表記のみを使う）。
+To avoid mistranslation, this spec uses these terms consistently.
 
-- **Scan**: 周辺の Advertise を検出する（Central 側の動作）
-- **Advertise**: 周辺へ広告を送出する（Peripheral 側の動作）
-- **Central / Peripheral**: CoreBluetooth の役割名（OSの用語に合わせる）
-- **GATT**: 接続後の Service/Characteristic による通信（`read` / `notify` / `write`）
-- **Transport**: Scan/Advertise 等の無線レイヤ実装（BLE/UWB/Thread 等）。Barnard は Transport を差し替え可能な形で扱う
+- **Scan**: detect nearby Advertise (Central role)
+- **Advertise**: broadcast payload (Peripheral role)
+- **Central / Peripheral**: CoreBluetooth role names
+- **GATT**: post-connection communication via Service/Characteristic (`read` / `notify` / `write`)
+- **Transport**: the radio layer implementation of Scan/Advertise (BLE / UWB / Thread, etc.). Barnard must be able to swap Transports.
 
-### Decisions（2025-12-16）
+### Decisions (2025-12-16)
 
-- `rpid + rssi` の時系列は **受信側が観測した事実**であり、相手端末から追加データを受け取る前提は置かない
-- 高密度（将来: 2000台規模）を想定し、基本線は **connectionless**（接続なし）で `rpid` を運ぶ
-- iOS は connectionless を優先し、無理な場合のみ **GATT fallback**（目標: Read+Notify / 及第点: Readのみ）を使う
-- 将来の BLE 以外（UWB/Thread 等）も視野に、API/実装は **Transport-agnostic** を前提にする
+- The `rpid + rssi` time series is receiver-observed facts; we do not require data coming from the other device
+- High density (future: ~2000 devices) is assumed; default is **connectionless** RPID delivery (no connection)
+- On iOS, prefer connectionless; use **GATT fallback** only if needed (goal: Read+Notify, acceptable: Read-only)
+- The design is **Transport-agnostic** to allow future non-BLE transports (UWB/Thread)
 
 ## User Scenarios & Testing *(mandatory)*
 
-### User Story 1 - アプリ開発者が Scan して検出イベントを受け取れる (Priority: P1)
+### User Story 1 - Developer can Scan and receive detection events (Priority: P1)
 
-アプリ/上位SDKの開発者として、Barnard を開始して BLE Scan を行い、検出した結果を「使いやすいイベント」として受け取りたい。権限不足やBluetooth OFF、バックグラウンド制約などは、失敗理由として明確に通知されたい。
+As an app / upper-SDK developer, I want to start BLE Scan via Barnard and receive detection events in a convenient structured form. Lack of permission, Bluetooth OFF, and OS limitations should be reported with clear reason codes.
 
-**Why this priority**: センシングの根幹。ここが成立しないと周辺（Beid/VC/POAP）へ進めない。
+**Why this priority**: This is the foundation of sensing. Without this, higher-level features cannot proceed.
 
-**Independent Test**: iOS/Android 実機で Scan 開始→検出→停止までを実施し、検出イベントと制約/エラーイベントが観測できること。
+**Independent Test**: On iOS/Android devices, perform Scan start → detect → stop, and confirm both detection events and constraint/error events.
 
 **Acceptance Scenarios**:
-1. **Given** Bluetooth ON & 権限OK、**When** Scan 開始、**Then** 状態が `scanning` になり、検出時に `detection` イベントが発行される
-2. **Given** Bluetooth OFF、**When** Scan 開始、**Then** `bluetooth_off` 相当の制約/エラーが通知され、開始できない（もしくは即停止）ことが分かる
-3. **Given** 権限不足、**When** Scan 開始、**Then** `permission_denied` 相当の制約/エラーが通知される
+
+1. **Given** Bluetooth ON & permissions OK, **When** Scan starts, **Then** state becomes `scanning` and a `detection` event is emitted when a device is detected
+2. **Given** Bluetooth OFF, **When** Scan starts, **Then** a `bluetooth_off`-like constraint/error is emitted and it is clear Scan cannot start (or stops immediately)
+3. **Given** missing permissions, **When** Scan starts, **Then** a `permission_denied`-like constraint/error is emitted
 
 ---
 
-### User Story 2 - アプリ開発者が Advertise（broadcast）できる (Priority: P1)
+### User Story 2 - Developer can Advertise (Priority: P1)
 
-アプリ/上位SDKの開発者として、Barnard で BLE Advertise を開始/停止し、payload フォーマットとバージョンが明示された形で送出したい。制約（バックグラウンド不可など）も通知されたい。
+As an app / upper-SDK developer, I want to start/stop BLE Advertise via Barnard, sending a payload with an explicit format and version. OS constraints must be surfaced as reason codes.
 
-**Why this priority**: センシング基盤として Scan と対になる必須機能。
+**Why this priority**: Advertise is the counterpart to Scan and required for a usable sensing foundation.
 
-**Independent Test**: iOS/Android 実機で Advertise 開始→停止までを実施し、状態遷移と制約/エラーが観測できること。
+**Independent Test**: On iOS/Android devices, perform Advertise start → stop and observe state transitions and constraint/error events.
 
 **Acceptance Scenarios**:
-1. **Given** Bluetooth ON & 権限OK、**When** Advertise 開始、**Then** 状態が `advertising` になり、停止で `idle` に戻る
-2. **Given** OS制約で Advertise 不可、**When** Advertise 開始、**Then** 理由コード付きで失敗が通知される
+
+1. **Given** Bluetooth ON & permissions OK, **When** Advertise starts, **Then** state becomes `advertising` and returns to `idle` on stop
+2. **Given** OS constraints prevent Advertise, **When** Advertise starts, **Then** it fails with a reason code
 
 ---
 
-### User Story 3 - オタクモード向けに内部イベントを観測できる (Priority: P2)
+### User Story 3 - Developer can observe internal debug timeline safely (Priority: P2)
 
-開発者として、Barnard 内部で何が起きているか（タイムライン、状態遷移、エラー/警告、検出のraw/parsed）を `debugEvents` として受け取り、Beid 側で可視化・原因切り分けしたい。ただしPIIや秘密情報は含めたくない。
+As a developer, I want to observe what happens inside Barnard (timeline, state transitions, errors/warnings, raw/parsed detection, metrics) as `debugEvents` to visualize and troubleshoot. The debug stream must not contain secrets/PII.
 
-**Why this priority**: BLEはOS差分と制約が多く、観測性がないと運用・検証が困難。
+**Why this priority**: BLE behavior varies by OS constraints; observability is critical for validation and operations.
 
-**Independent Test**: Scan/Advertise 操作に対し、開始/停止/状態遷移/エラーがデバッグイベントとして時系列に記録されること。イベント量が過多にならないこと。
+**Independent Test**: When operating Scan/Advertise, debug events record start/stop/state changes/errors in order. Under high-frequency RSSI, the buffer remains bounded and the stream remains stable (sampling/aggregation).
 
 **Acceptance Scenarios**:
-1. **Given** デバッグ購読ON、**When** Scan 開始/停止、**Then** `scan_start/scan_stop` と状態遷移イベントが発行される
-2. **Given** 高頻度RSSIが発生、**When** デバッグ購読ON、**Then** サンプリング/集約等で上限制御された形で提供される（破綻しない）
+
+1. **Given** debug subscription enabled, **When** Scan starts/stops, **Then** `scan_start/scan_stop` and state-transition events are emitted
+2. **Given** high-frequency RSSI, **When** debug subscription enabled, **Then** sampling/aggregation and bounded buffering prevents overload
 
 ---
 
-### User Story 4 - 複数配布形態に耐えるコア構成ができている (Priority: P2)
+### User Story 4 - Core structure supports multiple distribution forms (Priority: P2)
 
-開発者として、ネイティブSDKをコアとして、iOSは SPM、Androidは Maven/Gradle、将来的に Flutter（pub.dev）/React Native（npm）へ薄いラッパーで展開できる設計になっていてほしい。プロトタイプ段階では「全部の本番公開」ではなく、構成・ビルド・サンプル動作が成立していればよい。
+As a maintainer, I want a core SDK structure that can be distributed as iOS (SPM) and Android (Maven/Gradle) while allowing thin wrappers (Flutter/RN) to expose the same contract.
 
-**Why this priority**: 今後の配布先拡大のための前提条件。
+**Why this priority**: This defines the long-term maintainability and portability of the SDK.
 
-**Independent Test**: iOS/Androidで“ネイティブSDKとして”組み込める（ビルドできる）こと。さらに Flutter/RN は最小の呼び出し経路（骨格）を確認できること。
+**Independent Test**: Add the iOS/Android artifacts into host projects and run minimal Scan/Advertise flows.
 
 **Acceptance Scenarios**:
-1. **Given** iOSプロジェクト、**When** SPM で依存追加、**Then** Scan/Advertise の最小サンプルが動く
-2. **Given** Androidプロジェクト、**When** Gradle/Maven で依存追加、**Then** Scan/Advertise の最小サンプルが動く
+
+1. **Given** an iOS host project, **When** the SDK is added via SPM, **Then** a minimal Scan/Advertise sample runs
+2. **Given** an Android host project, **When** the SDK is added via Gradle/Maven, **Then** a minimal Scan/Advertise sample runs
+
+---
 
 ### Edge Cases
 
-- 連続して `startScan()` が呼ばれたとき（冪等/エラー/再起動の扱いは？）
-- Scan 中に権限が取り消されたとき（状態遷移と通知は？）
-- Bluetooth が途中でOFFになったとき
-- バックグラウンド遷移中/復帰時の挙動（OSごとの差分）
-- payload の解析に失敗したとき（rawは出す？ parsedはnull？ エラーイベント？）
-- デバッグイベントが大量に発生する場合の保持上限/サンプリング戦略
+- Repeated `startScan()` calls (idempotent vs error vs restart)
+- Permission revoked during Scan (state + events)
+- Bluetooth turns OFF mid-session
+- Foreground/background transitions (prototype is foreground-only; must be explicit)
+- Payload parse failures (raw data returned? parsed null? error vs debug event?)
+- Debug event flooding (sampling/aggregation/buffer bounds)
 
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
 
-- **FR-001**: Barnard は iOS/Android で BLE Scan の開始/停止を提供しなければならない
-- **FR-002**: Barnard は検出イベントを、上位が扱いやすい構造化イベントとして提供しなければならない（検出時刻、RSSI、識別子、payload raw/parsed 等）
-- **FR-003**: Barnard は BLE Advertise の開始/停止を提供しなければならない
-- **FR-004**: Barnard は Advertise payload のフォーマットとバージョンを明示しなければならない
-- **FR-005**: Barnard は権限不足、Bluetooth OFF、OS制約、バックグラウンド不可等を“理由コード付き”で通知しなければならない
-- **FR-006**: Barnard は Scan/Advertise の状態を明確に定義し、状態遷移を上位へ通知できなければならない
-- **FR-007**: Barnard は `debugEvents`（タイムライン、状態遷移、エラー/警告、検出raw/parsed、メトリクス）を提供できなければならない
-- **FR-008**: `debugEvents` は秘密情報/PIIを含まず、頻度・保持の制御（サンプリング、集約、バッファ上限）を備えなければならない
-- **FR-009**: Barnard は特定サーバURLやAPI仕様に依存してはならない（アプリ側で実装する）
-- **FR-010**: Barnard は VC発行/検証、POAP発行等のドメインロジックを実装してはならない
-- **FR-011**: Barnard は iOS(SPM) / Android(Maven/Gradle) の配布形態を前提に、将来 Flutter(pub.dev) / React Native(npm) を薄いラッパーで提供できる構造でなければならない
-- **FR-012**: Barnard はプラットフォーム制約を抽象化しつつ、必要に応じて上位が判断できる情報を返さなければならない
-- **FR-013**: Barnard は RPID（Rotating Proximity ID）を生成し、Advertise payload へ載せ、受信側でparseして検出イベントに含めなければならない
-- **FR-014**: Barnard は同時に Scan + Advertise を開始/停止できる Autoモード（第一級機能）を提供しなければならない
-- **FR-015**: プロトタイプ段階では、Barnard はフォアグラウンド動作のみを動作保証範囲とし、バックグラウンドは未サポートとして明示しなければならない
-- **FR-016**: `debugEvents` は push（ストリーム）と pull（スナップショット/バッファ取得）を提供しなければならない
-- **FR-017**: Barnard は debug用途の `displayId`（短い識別表示。例: ハッシュ先頭）を提供してよい（追跡リスクを増やさない形）
-- **FR-018**: Barnard は RSSI を「平均値」だけで潰さず、時系列として扱える **サンプリング/保持** の仕組み（上限あり）を提供しなければならない
-- **FR-019**: RPID の rotationSeconds は debug用途で上位から調整できなければならない（ただし安全側の上限/下限を設ける）
-- **FR-020**: プロトタイプ段階の `ScanConfig` / `AdvertiseConfig` は最小限とし、未指定でも開始できるデフォルトを提供しなければならない
-- **FR-021**: iOS等で Advertise だけでは `rpid` を安定して運べない/拡張できない場合に備え、Barnard は **接続（GATT）による data exchange** をサポートできなければならない（接続/再接続/最小Read/Notify/Write）
+- **FR-001**: Barnard MUST provide BLE Scan start/stop on iOS/Android
+- **FR-002**: Barnard MUST emit structured detection events (timestamp, RSSI, payload raw/parsed, platform metadata)
+- **FR-003**: Barnard MUST provide BLE Advertise start/stop
+- **FR-004**: Barnard MUST clearly specify Advertise payload format and version
+- **FR-005**: Barnard MUST report permission/Bluetooth OFF/OS constraints/unsupported background etc. via reason-coded events
+- **FR-006**: Barnard MUST define Scan/Advertise state and notify state transitions
+- **FR-007**: Barnard SHOULD provide `debugEvents` (timeline, state transitions, errors/warnings, raw/parsed detection, metrics)
+- **FR-008**: `debugEvents` MUST exclude secrets/PII and include rate/buffer controls (sampling/aggregation/bounds)
+- **FR-009**: Barnard MUST NOT depend on a specific server URL or API spec
+- **FR-010**: Barnard MUST NOT implement VC issuance/verification, POAP issuance, or other domain logic
+- **FR-011**: Barnard MUST be structured to allow iOS (SPM) / Android (Maven/Gradle) distribution and thin wrappers (Flutter/RN)
+- **FR-012**: Barnard MUST abstract platform constraints while returning decision-useful information to upper layers
+- **FR-013**: Barnard MUST generate RPID and include it in Advertise payload; receiver MUST parse it into detection events
+- **FR-014**: Barnard MUST provide a first-class Auto mode to start/stop Scan + Advertise together
+- **FR-015**: Prototype support MUST be foreground-only and explicitly documented as such
+- **FR-016**: `debugEvents` MUST support push (stream) and pull (buffer snapshot)
+- **FR-017**: Barnard MAY provide a debug-only `displayId` (short identifier derived from RPID; not increasing tracking risk)
+- **FR-018**: Barnard MUST NOT collapse RSSI to an average only; it MUST support time-series sampling/retention (bounded)
+- **FR-019**: RPID `rotationSeconds` MUST be adjustable by upper layers for debugging (with safe bounds)
+- **FR-020**: Prototype `ScanConfig` / `AdvertiseConfig` MUST be minimal and have safe defaults when omitted
+- **FR-021**: Barnard MUST support connection-based data exchange via GATT as an optional fallback (connect/reconnect + minimal Read/Notify/Write)
 
 ### Platform Requirements
 
-- **FR-IOS-001**: iOS では `NSBluetoothAlwaysUsageDescription` を要求し、ホストアプリに設定が必要であることをドキュメント化しなければならない
-- **FR-IOS-002**: バックグラウンドでの Scan/Advertise をサポートする場合、ホストアプリで `UIBackgroundModes` に `bluetooth-central` / `bluetooth-peripheral` が必要であることをドキュメント化しなければならない
-- **FR-IOS-003**: iOS 実装は必要に応じて State Restoration を利用できる設計でなければならない（`CBCentralManagerOptionRestoreIdentifierKey` / `CBPeripheralManagerOptionRestoreIdentifierKey` の採用を含む）
+- **FR-IOS-001**: iOS host apps MUST provide `NSBluetoothAlwaysUsageDescription` (documented requirement)
+- **FR-IOS-002**: If background Scan/Advertise is ever supported, host apps MUST provide `UIBackgroundModes` (`bluetooth-central` / `bluetooth-peripheral`) (documented requirement)
+- **FR-IOS-003**: iOS implementation SHOULD allow State Restoration (`CBCentralManagerOptionRestoreIdentifierKey` / `CBPeripheralManagerOptionRestoreIdentifierKey`) when needed
 
-### Prototype API Sketch（設定最小）
+### Prototype API Sketch (minimal config)
 
-プロトタイプでは「何も設定しなくても Scan/Advertise/Auto が動く」ことを優先し、設定は **debug用途の上書き** に寄せる。
+Prototype prioritizes “works with no config”. Config is primarily for debug overrides.
 
 - `startScan(config?)` / `stopScan()`
 - `startAdvertise(config?)` / `stopAdvertise()`
-- `startAuto(config?)` / `stopAuto()`（第一級）
-- `events`（detection / state / constraint / error）
-- `debugEvents`（push）+ `getDebugBuffer()`（pull）
-- `getRssiSamples({ since?, limit?, rpid? })`（pull。時系列を返す）
+- `startAuto(config?)` / `stopAuto()` (first-class)
+- `events` (detection / state / constraint / error)
+- `debugEvents` (push) + `getDebugBuffer()` (pull)
+- `getRssiSamples({ since?, limit?, rpid? })` (pull; time series)
 
-`config` の例（概念。言語別に適用）:
+Example config knobs (conceptual; language-specific mapping):
 
-- `rpid.rotationSeconds`（default: 600, 範囲: 60..3600）
-- `rssi.minPushIntervalMs`（default: 1000）
-- `rssi.bufferMaxSamples`（default: 20000）
+- `rpid.rotationSeconds` (default: 600, range: 60..3600)
+- `rssi.minPushIntervalMs` (default: 1000)
+- `rssi.bufferMaxSamples` (default: 20000)
 
-## RPID（Rotating Proximity ID）と Payload 仕様（ドラフト）
+## RPID (Rotating Proximity ID) and Payload (draft)
 
-Barnard は「デバイス固有IDを Advertise に含めない」一方で、近接センシングに必要な相関キーとして RPID を扱う。
+Barnard MUST NOT include device-unique identifiers in Advertise, but it MUST provide a correlation key (RPID) for near-field sensing.
 
-- **RPID の目的**: 受信側が「同一時間窓における同一送信者の Advertise」を相関できること（追跡可能性は最小化）
-- **回転（rotation）**: 既定は **10分**（暫定）。debug用途で上位から変更可能とする（ただし安全側の上限/下限を設ける）
-- **非目標**: RPID からデバイス固有性が推測できないこと（永続IDに結び付かない）
+- **Goal**: Receiver can correlate “same sender within the same time window” while minimizing tracking risk
+- **Rotation**: default **10 minutes** (tentative). Upper layers may override for debugging (with safe bounds)
+- **Non-goal**: Deriving a stable device identity from RPID (no persistence across windows)
 
-### 推奨生成（実装案・要調整）
+### Recommended generation (tentative)
 
-- 各端末はローカルに `rpidSeed`（ランダムな秘密）を保持する（外部送信しない）
-- 現在時刻から `windowIndex = floor(unixTimeSeconds / rotationSeconds)` を計算する
-- `rpid = Truncate(HMAC-SHA256(rpidSeed, windowIndex), 16 bytes)` のような決定的生成を行う  
-  ※ 目的は“同一窓での安定性”と“窓を跨いだ追跡耐性”。詳細は plan で確定する
+- Each device stores a local secret `rpidSeed` (random; never sent externally)
+- Compute `windowIndex = floor(unixTimeSeconds / rotationSeconds)`
+- Compute `rpid = Truncate(HMAC-SHA256(rpidSeed, windowIndex), 16 bytes)`
 
-### 追跡リスク最小化（Barnardとしての方針）
+### Tracking risk minimization
 
-- RPID は **端末内の秘密（`rpidSeed`）から擬似乱数的に生成**し、外部へ送信しない（seed露出がない限り他者が予測できない）
-- `rpidSeed` は「再インストールで消える」ストレージに置く（iOS Keychain のようにアンインストール後も残り得る領域は避ける方針）
-- rotationSeconds を短くしすぎると観測粒度は上がるが、バッテリー/処理負荷が上がるため、**安全側の範囲**（例: 60s〜3600s）を設ける
-- 端末ごとに `epochOffsetSeconds`（0〜rotationSeconds未満のランダム）を持たせ、回転境界が同時刻に揃いにくいようにしてよい（受信側は payload を読むだけなので同期不要）
+- RPID is derived from an on-device secret; without `rpidSeed` it must not be predictable
+- Store `rpidSeed` in storage that is removed on uninstall (avoid stores that may survive uninstall, e.g., iOS Keychain)
+- Enforce safe bounds for rotation to avoid excessive battery/CPU (e.g., 60s..3600s)
+- Optional: `epochOffsetSeconds` (0..rotationSeconds-1) to desynchronize rotation boundaries across devices
 
-### displayId（デバッグ表示用）
+### displayId (debug-only)
 
-- `displayId` は UI表示の利便性のための短縮表現であり、**RPIDから一方向に導出**する（例: `hex(rpid[0..4])` / base32先頭など）
-- `displayId` は RPID と同じ回転で変わるため、永続識別子にならない
+- `displayId` is derived one-way from RPID (e.g., first bytes in hex/base32)
+- It rotates with RPID and must not become a persistent identifier
 
-### Advertise Payload（最小）
+### Advertise Payload (logical format)
 
-Barnard が扱う「payload」は **論理フォーマット（抽象）** とし、OSが許す範囲で on-wire へのエンコードは変わり得る（ただし Barnard が吸収して `rpid` を正規化して返す）。
+Barnard’s “payload” is a **logical format**; on-wire encoding may vary by OS, but Barnard must normalize to return `rpid`.
 
-- `formatVersion`: 1（プロトタイプは固定。上位へは明示的に返す）
-- `rpid`: 16 bytes（検出イベントのキー）
-- （将来拡張）`payloadType` / `flags` / `reserved` 等
+- `formatVersion`: 1 (prototype fixed; returned explicitly to upper layers)
+- `rpid`: 16 bytes
+- (future) `payloadType` / `flags` / `reserved`
 
-#### iOS on-wire（CoreBluetooth Peripheral）
+#### iOS on-wire (CoreBluetooth Peripheral)
 
-iOS の Peripheral Advertise は Advertise データに載せられるキーが限定されるため、Barnard は iOS においても **可能な限り connectionless**（接続しない）で `rpid` を運ぶ設計を基本線とする。
+iOS Advertise fields are constrained, so Barnard should prioritize **connectionless** RPID delivery where possible.
 
-- Advertise（discovery）: 固定の Service UUID（= Barnard Discovery Service）+ 固定の短い Local Name（例: `BNRD`）
-- Advertise（rpid）: OSが許す範囲で `rpid` を Advertise に載せる（例: Service UUID / Service Data 等）。受信側は Advertise を parse して `rpid` を取得する
+- Advertise (discovery): fixed Service UUID (= Barnard Discovery Service) + fixed short Local Name (e.g., `BNRD`)
+- Advertise (rpid): encode `rpid` in allowed fields (e.g., Service UUID or Service Data). Receiver parses Advertise to obtain `rpid`.
 
-この場合、受信側は「Scan で検出 → Advertise を parse して `rpid` を取得」したうえで、検出イベントに `rpid + rssi` を必ず含める。
-`rssi` は（1）Scan時のRSSI（scan callback）か（2）接続後のRSSI（readRSSI等）で取得できるが、空間環境データ用途では時系列になるため Barnard 側のサンプリング/保持が重要になる。
+Receiver flow: Scan → parse Advertise → obtain `rpid` → emit detection with `rpid + rssi`.
 
-#### iOS: GATT（optional / fallback）
+#### iOS: GATT (optional fallback)
 
-connectionless で `rpid` を運べない/不安定な場合に備え、Barnard は **GATT fallback** を持てる設計にする。
+If connectionless `rpid` delivery is not possible or not stable enough, Barnard may use a **GATT fallback**.
 
-- Central が接続した後、GATT で `rpid` を取得する
-- `rpid` 取得は **Read + Notify の両対応**を目標とし、及第点は **Read のみ**とする
+- Central connects, then obtains `rpid` via GATT
+- Target: **Read + Notify** supported; acceptable minimum: **Read-only**
+- In high density environments, GATT must be default-off (opt-in) or heavily budgeted (connections become a bottleneck)
 
-#### Android on-wire（暫定）
+#### Android on-wire (tentative)
 
-Android は一般に iOS より Advertise データの自由度が高い。プロトタイプでは「iOSで成立する最小」を優先し、拡張（Service Data / Manufacturer Data 等）は後続で扱う。
+Android generally allows more freedom than iOS. Prototype should prioritize “the minimal design that works on iOS”, and consider extensions (Service Data / Manufacturer Data) later.
 
-受信側は payload を parseし、検出イベントとして **`rpid` と `rssi`（測定値）** を必須で提供する。
+Receiver MUST parse payload and include `rpid + rssi` in detections.
 
-### Payload バージョニング（暫定）
+### Payload versioning (tentative)
 
-- `formatVersion` を **破壊的変更の境界**とする（`1` の間は後方互換の拡張のみ）
-- `formatVersion` が未知の値の場合は `payloadParsed = null` とし、`payloadRaw` と「unsupported_version」系の debug/constraint を返せるようにする
+- `formatVersion` is the boundary for breaking changes
+- Unknown `formatVersion` should result in `payloadParsed = null` with `payloadRaw` preserved and an `unsupported_version`-like debug/constraint event
 
-## RSSI サンプリングとメモリバッファ（ドラフト）
+## RSSI sampling and in-memory buffer (draft)
 
-RSSI は「空間環境データ」のシグナルとして情報量があり、単純平均だけでは表現力が弱い。Barnard は push/pull 両方で扱えるようにする。
+RSSI carries information for “environment data”. Barnard should support both push and pull while keeping the system stable.
 
-### push（ストリーム）: 破綻しないイベント設計
+### Push (stream): stable under load
 
-- `detection` は高頻度になり得るため、push側では **サンプリング/間引き** を行ってよい
-- 例: 同一 `rpid` に対しては `minPushIntervalMs`（例: 500〜2000ms）を設け、その間に得たRSSIを `count/min/max/mean` 等にまとめた `rssiSummary` として送る
+- `detection` can be high-frequency; push may sample/aggregate
+- Example: per `rpid`, enforce `minPushIntervalMs` (e.g., 500..2000ms) and emit `rssiSummary` (`count/min/max/mean`) instead of raw per-hit RSSI
 
-### pull（バッファ取得）: 時系列を返す
+### Pull (buffer): return time series
 
-- 内部にリングバッファ（メモリのみ）を持ち、`RssiSample { timestamp, rpid, rssi }` を保存する
-- 上限は「サンプル数」もしくは「メモリ見積り」ベースで固定（例: 20,000 samples）。超過時は古いものから破棄する
-- pull API では `since`（時刻）/ `limit` を指定して取得できる想定（必要なら `rpid` でフィルタ）
+- Maintain an in-memory ring buffer of `RssiSample { timestamp, rpid, rssi }`
+- Bound by count or memory estimate (e.g., 20,000 samples). Drop oldest on overflow.
+- Pull API supports `since` / `limit` (and optionally `rpid` filter)
 
-### デフォルト（プロトタイプ）
+### Prototype defaults
 
-- pushは「破綻しない」こと優先で間引きあり、pullは可能な限り生データを保持する（ただし上限あり）
+- Push prioritizes stability (sampling/aggregation allowed)
+- Pull retains as much raw data as possible (within bounds)
 
-## Autoモード（Scan + Advertise 同時）
+## Auto mode (Scan + Advertise)
 
-プロトタイプでは Scan と Advertise を別々に扱うよりも、「同時に動かす」ことを第一級のユースケースとする。
+Auto mode is first-class.
 
-- `startAuto()` は **scan+advertise を同時に開始**し、`stopAuto()` は両方を停止する
-- 片方だけ失敗し得るため、開始結果は「成功/失敗」だけでなく **部分成功** を表現できるようにする（例: `started: { scanning: true, advertising: false }` + 理由コード）
-- 状態モデルは「単一state文字列」よりも `isScanning/isAdvertising` のように **直交で表現**できると実装差分を吸収しやすい（上位には簡易stateも返せる）
+- `startAuto()` starts Scan + Advertise concurrently; `stopAuto()` stops both
+- Partial success must be representable (e.g., Scan started but Advertise failed with a reason code)
+- Prefer representing state orthogonally (`isScanning` / `isAdvertising`) while optionally providing a simplified composite state for upper layers
 
-## iOS制約と GATT（connectionless 優先）
+## iOS constraints and GATT (connectionless first)
 
-iOS はプライバシー/省電力の観点で BLE の扱いに制約があり、Advertise に載せられる情報量やフォーマットが制限される。Barnard は **connectionless を基本線**にしつつ、必要なら GATT fallback を使えるようにする。
+iOS constrains what can be encoded in Advertise. Barnard must prioritize connectionless RPID delivery and use GATT fallback only when needed.
 
-### iOS: Advertise/Scan の前提（フォアグラウンド）
+### iOS: foreground-only prototype
 
-- プロトタイプはフォアグラウンドのみ。バックグラウンド要件（`UIBackgroundModes` 等）は **将来** として切り出す
-- iOS Peripheral の Advertise データは制約が強い（載せられるキーが限定される）。プロトタイプは **固定 Service UUID + 固定 Local Name** を discovery の軸にし、`rpid` は可能なら Advertise に載せて parse する（無理なら GATT fallback）
-- RSSI 時系列のため、Scan 側は `AllowDuplicates` を `true` にする必要が出る可能性がある（その場合は Barnard 側のサンプリングで破綻を防ぐ）
+- Prototype is foreground-only; background requirements are deferred and must be explicit
+- Use fixed Service UUID + fixed Local Name for discovery; try to carry `rpid` connectionlessly; otherwise use GATT fallback
+- For RSSI time series, Central Scan may require `AllowDuplicates = true`; Barnard must prevent overload via sampling/buffers
 
-### GATT（optional / fallback）
+### GATT (optional / fallback)
 
-Advertise に `rpid` を載せられない/安定しない場合に備え、GATT を fallback として使う。高密度（例: 2000台）環境では接続がボトルネックになるため、GATT は **デフォルトOFF**（上位opt-in）または **厳密な接続予算**の下でのみ使う。
+GATT is a fallback for cases where connectionless RPID delivery is impossible/unstable.
 
-- Advertise は discovery 用途に寄せる（固定 Service UUID）
-- Central は Scan で検出した Peripheral へ接続し、GATT で `rpid` を受け取る
-- `rpid` 取得は **Read + Notify の両対応**を目標とし、及第点は **Read のみ**とする
-- 接続制御（例）: `maxConcurrentConnections=1` / `cooldownPerPeripheral` / `connectBudgetPerMinute` / `maxConnectQueue`
+- Connect budget knobs: `maxConcurrentConnections`, `cooldownPerPeripheral`, `connectBudgetPerMinute`, `maxConnectQueue`
 
-## Architecture Sketch（Transport-agnostic / Clean Architecture）
+## Architecture Sketch (Transport-agnostic / clean boundaries)
 
-Barnard は将来 BLE 以外（UWB / Thread 等）も視野に入れ、Scan/Advertise を **Transport に抽象化**する。上位は「Transportが何か」を意識せずに、同一のイベント/データモデルで扱えることを目標とする。
+Barnard must be extensible beyond BLE (e.g., UWB/Thread). The upper layer should not care which Transport is used; it should consume the same contract.
 
-- `BarnardCore`（純粋ロジック）: RPID 生成、payload parse、RSSI buffer、サンプリング、状態遷移、debug buffer
-- `Transport`（差し替え可能）: Scan/Advertise の開始停止、検出イベント（raw）を Core へ渡す
-- `PlatformDriver`（OS実装）: iOS CoreBluetooth / Android BLE API / 将来の UWB/Thread 実装
+- `BarnardCore` (pure logic): RPID generation, payload parsing, RSSI buffer, sampling, state transitions, debug buffer
+- `Transport` (swappable): start/stop Scan/Advertise, emit raw detections to Core
+- `PlatformDriver` (OS implementation): iOS CoreBluetooth / Android BLE APIs / future UWB/Thread
 
-Core が受け取る最小入力（概念）:
+Minimal Core input (conceptual):
 
 - `TransportDetection { timestamp, transportKind, rawPayload?, rssi, metadata }`
 
-Core が上位へ出す最小出力:
+Minimal Core output:
 
 - `DetectionEvent { timestamp, rpid, rssi, transportKind, displayId?, payloadVersion }`
 
-Transport の capabilities（例）:
+Transport capabilities (examples):
 
-- `supportsConnectionlessRpid`（Advertise に `rpid` を載せられる）
-- `supportsGattFallback`（接続で `rpid` を取れる）
-- `supportsRssiHighRate`（高頻度RSSI取得の可否/制限）
+- `supportsConnectionlessRpid`
+- `supportsGattFallback`
+- `supportsRssiHighRate`
 
-## Reference Implementation Notes（既存サンプルからの学び）
+## Reference Implementation Notes (from a prior iOS prototype)
 
-過去に作成した iOS の参考実装で確認できた “まず動かす” ための要点を、プロトタイプの初期前提として取り込む（この仕様だけで実装判断できるように記述する）。
+Notes captured from a prior iOS prototype (described here so the team does not need external references):
 
-- Scan は固定の discovery service を `withServices: [...]` でフィルタし、検出後は接続して `discoverServices/Characteristics` し、必要なら Notify を購読する（`AllowDuplicates` はRSSI時系列要件に応じて検討）
-- Advertise は `CBAdvertisementDataLocalNameKey` と `CBAdvertisementDataServiceUUIDsKey`（サービスUUID）で最小構成になっている
-- Central / Peripheral の state 変化（`poweredOn/off/unauthorized/unsupported` 等）をログとして観測している
-- バックグラウンド要件: `UIBackgroundModes` に `bluetooth-central` / `bluetooth-peripheral`、かつ `NSBluetoothAlwaysUsageDescription` が必要
-- “Autoモード”として Scan と Advertise を同時に開始できる（運用/デバッグに有用）
-- GATT の最小構成（128-bit Service + Write/Notify characteristic）で相互接続・Notify送受信の例がある  
-  ※ `rpid` を GATT で運ぶ場合は Read/Notify を使い分けられるようにする（目標: 両対応、及第点: Readのみ）
+- Central uses `scanForPeripherals(withServices: [discoveryServiceUUID], options: ...)` to filter discovery
+- Peripheral uses minimal Advertise data (`LocalName` + `ServiceUUIDs`) for discovery
+- Central auto-connects on discovery in the prototype; production/high-density should use connect budgeting
+- Observe Central/Peripheral state changes (`poweredOn/off/unauthorized/unsupported`) via logs/events
+- Background requires `UIBackgroundModes` and `NSBluetoothAlwaysUsageDescription` (deferred for prototype)
+- Auto mode starts both Scan and Advertise
+- Minimal GATT setup: 128-bit Service + Write/Notify Characteristics (if using GATT fallback). Target: Read+Notify; acceptable: Read-only.
 
 ### Key Entities *(include if feature involves data)*
 
-- **BarnardState**: `idle / scanning / advertising / error` 等の状態（最小セット）
-- **StateTransition**: `from/to` と理由（ユーザー操作/OS制約/エラー等）
-- **ScanConfig**: フィルタ/間隔/対象payload種別等（プロトタイプは最小限）
-- **AdvertiseConfig**: payload、送出モード等（プロトタイプは最小限）
-- **DetectionEvent**: `timestamp`, `rssi`, `identifier`, `payloadRaw`, `payloadParsed?`, `sourcePlatform`
+- **BarnardState**: `idle / scanning / advertising / error` (minimal)
+- **StateTransition**: `from/to` + reason
+- **ScanConfig**: minimal for prototype
+- **AdvertiseConfig**: minimal for prototype
+- **DetectionEvent**: `timestamp`, `rssi`, `rpid`, `payloadRaw`, `payloadParsed?`, `transportKind`, `sourcePlatform`
 - **ConstraintEvent / ErrorEvent**: `code`, `message?`, `recoverability`, `requiredAction?`
-- **DebugEvent**: タイムラインイベント（開始/停止/検出/権限変化/Bluetooth変化/警告/エラー/メトリクス）
-- **MetricsSnapshot**: 検出件数、最終検出時刻、平均RSSI、稼働時間、エラー回数 等
-- **PayloadFormat**: `name`, `version`, `fields`（互換性のための宣言）
-- **RPID**: Rotating Proximity ID（payload内に格納され、検出イベントのキーとなる）
-- **RPIDConfig**: `rotationSeconds` 等（debug用途の上位調整を含む）
-- **RssiSample**: `timestamp`, `rssi`（高頻度になり得るためサンプリング制御対象）
-- **RssiSummary**: `count/min/max/mean` 等（push側の間引き・集約用）
-- **RssiBuffer**: メモリリングバッファ（pull取得のための保持領域）
-- **displayId**: デバッグUI向け短縮ID（RPIDから導出）
+- **DebugEvent**: timeline events (start/stop/detection/permission/Bluetooth changes/warnings/errors/metrics)
+- **MetricsSnapshot**: counts, last seen, uptime, error counts
+- **PayloadFormat**: `name`, `version`, `fields`
+- **RPIDConfig**: `rotationSeconds`, etc.
+- **RssiSample**: `timestamp`, `rpid`, `rssi`
+- **RssiSummary**: `count/min/max/mean`
+- **RssiBuffer**: in-memory ring buffer
+- **displayId**: derived debug-only short ID
 
 ## Success Criteria *(mandatory)*
 
 ### Measurable Outcomes
 
-- **SC-001**: iOS/Android 実機で Scan 開始→検出→停止が成功し、検出イベントが取得できる
-- **SC-002**: iOS/Android 実機で Advertise 開始→停止が成功し、状態遷移が取得できる
-- **SC-003**: 権限不足/Bluetooth OFF/OS制約など主要な失敗パスで、理由コード付きイベントが取得できる
-- **SC-004**: デバッグイベントが時系列と状態遷移を破綻なく提供し、PII/秘密情報を含まない
-- **SC-005**: 配布戦略（SPM/Maven + Flutter/RN薄ラッパー）の方針と骨格が仕様として合意される
+- **SC-001**: On iOS/Android devices, Scan start → detect → stop works and detection events can be obtained
+- **SC-002**: On iOS/Android devices, Advertise start → stop works and state transitions can be obtained
+- **SC-003**: Major failure paths (permission/Bluetooth OFF/OS constraints) emit reason-coded events
+- **SC-004**: Debug events provide a stable timeline and state transitions without secrets/PII, under bounded rate/buffer controls
+- **SC-005**: Distribution strategy (SPM/Maven + thin wrappers) is agreed as a spec
 
 ## Open Questions / Clarifications
 
-- RPID の生成方式の細部（seed格納先の具体、epochOffset採否、rotationSecondsの上下限）を確定する
-- RSSI サンプリング戦略の既定値（`minPushIntervalMs` / バッファ上限 / pull API の形）を確定する
-- Autoモードの失敗時振る舞い（部分成功の表現、復旧/再試行ポリシー）を確定する
-- iOS の connectionless `rpid` on-wire（Service UUID / Service Data など、どのフィールドを使うか）と、その parse 仕様を確定する
-- 高密度（将来 2000台規模）での Scan 設定（Filter / AllowDuplicates / サンプリング既定値）を確定する
-- GATT fallback の有効化条件（デフォルトOFFか、debug-onlyか）と、接続予算 knobs（`maxConcurrentConnections` / `connectBudgetPerMinute` 等）の既定値を確定する
-- Transport 抽象の最小インターフェース（入力 `TransportDetection` / 出力 `DetectionEvent` / capabilities）を確定する
+- RPID details: concrete seed storage per platform, epochOffset adoption, rotationSeconds bounds
+- RSSI sampling defaults: `minPushIntervalMs`, buffer bounds, pull API details
+- Auto mode semantics: partial success representation, recovery/retry policy
+- iOS connectionless on-wire encoding for `rpid` (which fields are used) and parse rules
+- High-density Scan defaults (filters / AllowDuplicates / sampling) to remain stable up to future ~2000 devices
+- GATT fallback enablement (default-off vs debug-only) and connection budgeting defaults
+- Minimal Transport interface details (input/output contracts + capabilities)

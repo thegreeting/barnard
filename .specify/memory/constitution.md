@@ -1,50 +1,57 @@
 # Barnard Constitution
 
-Barnard は「BLEセンシング基盤」として、複数クライアント（Flutter / React Native / iOS / Android）で同等の品質と挙動を提供するためのコアSDK群である。
+Barnard is a “sensing foundation SDK” that aims to provide consistent quality and behavior across multiple clients (Flutter / React Native / iOS / Android).
 
 ## Core Principles
 
-### I. Native-Core First（ネイティブSDKがコア）
-- BLEの本質的な挙動（スキャン/広告、制約対応、イベント生成、観測性）は iOS/Android のネイティブSDKに実装する。
-- Flutter / React Native は薄いラッパーとし、概念モデルとイベント契約を揃えて露出する。
-- 「フレームワーク差」により挙動が変わらないことを優先する。
+### I. Native-Core First
 
-### II. Contract First（イベントモデルは契約）
-- Barnard の主要成果物は「イベントモデル（メイン + デバッグ）」である。
-- 破壊的変更は最小化し、必要な場合は明示的なバージョニングで扱う。
-- 不明確な挙動（OS差分、権限、バックグラウンド制約）は“隠す”のではなく、上位が判断できる情報として返す。
+- Implement the essential runtime behavior (Scan/Advertise, constraints, event generation, observability) in native iOS/Android SDKs.
+- Flutter / React Native are thin wrappers that expose the same conceptual model and event contract.
+- Prefer “behavioral consistency” over framework-specific convenience.
 
-### III. Explicit State Machine（状態と遷移を第一級に）
-- スキャン/広告の状態（例: `idle / scanning / advertising / error`）を明確に定義し、遷移をイベントとして提供する。
-- APIは“呼べた/呼べない”よりも、“今どの状態で、なぜそうなったか”が分かる設計にする。
+### II. Contract First
 
-### IV. Observability without PII（オタク向け観測は強力に、しかし安全に）
-- `debugEvents` は「デバッグに必要な情報」に限定し、秘密情報・PII・追跡可能性が高いデータを含めない。
-- イベント量が増える前提で、サンプリング・集約・バッファ上限などの制御を設計に含める。
-- デバッグのための内部情報は“UI”ではなく“データ”として提供する（可視化はクライアント側）。
+- Barnard’s primary deliverable is the **event contract** (main + debug).
+- Minimize breaking changes; if necessary, handle them via explicit versioning.
+- Do not “hide” unclear behavior (OS differences, permissions, background constraints). Surface decision-useful information to upper layers.
 
-### V. Responsibility Boundary（責務境界を守る）
-- Barnard の責務は BLEセンシング（スキャン/広告）と、その結果・制約・観測性イベントの提供まで。
-- VC発行/検証、POAP発行、特定サーバAPI依存、UI実装などのドメインロジックは非責務。
+### III. Explicit State Machine
 
-### VI. Simple, Portable, Publishable（シンプルで移植可能、配布可能）
-- 依存を最小化し、プラットフォームの標準配布経路（SPM / Maven / pub.dev / npm）に乗せやすい構成を優先する。
-- “プロトタイプでも将来のコア化ができる”ように、責務分離と契約を先に固める。
+- Define Scan/Advertise states clearly (e.g., `idle / scanning / advertising / error`) and provide state transitions as events.
+- Prefer APIs that explain “what state we are in and why” over APIs that only return success/failure.
+
+### IV. Observability without PII
+
+- `debugEvents` must be powerful enough for troubleshooting but must not include secrets, PII, or data that meaningfully increases tracking risk.
+- Assume event volume can be high; include sampling/aggregation/bounded buffers in the design.
+- Provide debug information as data, not UI (visualization belongs to clients).
+
+### V. Responsibility Boundary
+
+- Barnard’s responsibility ends at sensing (Scan/Advertise) and delivering results/constraints/observability events.
+- Domain logic (VC issuance/verification, POAP issuance), server dependencies, and UI are out of scope.
+
+### VI. Simple, Portable, Publishable
+
+- Keep dependencies minimal and prefer standard distribution paths (SPM / Maven / pub.dev / npm).
+- Ensure prototype work can evolve into a publishable core by locking in boundaries and contracts early.
 
 ## Non-Goals / Constraints
 
-- Barnard は特定のサーバURLやAPI仕様に依存しない（アプリ側で実装する）。
-- Barnard 単体で完全な不正耐性（電波偽装/リレー攻撃等）を解決しない（制約として明文化する）。
-- 署名鍵などの秘密情報は保持・露出しない。
+- Barnard does not depend on specific server URLs or API specs (apps implement those).
+- Barnard alone does not fully solve adversarial radio attacks (relay/spoofing). Document this as a limitation.
+- Do not store or expose secrets such as signing keys.
 
 ## Quality Gates / Workflow
 
-- 変更は「仕様（spec）→ 計画（plan）→ タスク（tasks）→ 実装」の順で反映する。
-- イベント契約に影響する変更は、必ず仕様へ追記し、サンプルまたはテストで検証可能にする。
-- デバッグイベントは安全性（PII/秘密情報）と量（頻度/保持上限）の観点でレビューする。
+- Apply changes in order: spec → plan → tasks → implementation.
+- Any change that affects the event contract must be reflected in the spec and validated via a sample or test.
+- Review debug events for safety (PII/secrets/tracking risk) and for volume control (rate/buffer bounds).
 
 ## Governance
-- 本憲法は Barnard に関する意思決定の最上位ルールであり、以後の仕様・計画・実装はこれに従う。
-- 破壊的変更（互換性のない変更）や責務変更は、憲法/仕様に明記し、移行手順を伴う。
+
+- This constitution is the highest-level rule for Barnard decisions; all specs/plans/implementations must follow it.
+- Breaking changes or responsibility changes must be documented in the constitution/spec and accompanied by a migration path.
 
 **Version**: 0.1.0 | **Ratified**: 2025-12-15 | **Last Amended**: 2025-12-15
