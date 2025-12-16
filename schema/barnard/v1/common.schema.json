@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thegreeting.github.io/barnard/schema/barnard/v1/common.schema.json",
+  "title": "Barnard Common Types (v1)",
+  "type": "object",
+  "$defs": {
+    "TransportKind": {
+      "type": "string",
+      "enum": ["ble", "uwb", "thread", "unknown"]
+    },
+    "DebugLevel": {
+      "type": "string",
+      "enum": ["trace", "info", "warn", "error"]
+    },
+    "RpidBytes": {
+      "description": "RPID as 16 bytes encoded as base64.",
+      "type": "string",
+      "contentEncoding": "base64"
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}
+
