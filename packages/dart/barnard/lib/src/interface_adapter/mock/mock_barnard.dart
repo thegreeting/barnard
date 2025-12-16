@@ -10,15 +10,26 @@ import "../../domain/events.dart";
 import "../../domain/rssi.dart";
 import "../../domain/state.dart";
 import "../../domain/transport.dart";
-import "../../barnard.dart";
 import "mock_peer.dart";
 import "ring_buffer.dart";
+
+class MockBarnardOverrides {
+  const MockBarnardOverrides({
+    this.rotationSeconds,
+    this.minPushIntervalMs,
+    this.bufferMaxSamples,
+  });
+
+  final int? rotationSeconds;
+  final int? minPushIntervalMs;
+  final int? bufferMaxSamples;
+}
 
 class MockBarnard implements BarnardClient {
   MockBarnard({
     int simulatedPeerCount = 50,
     int tickMs = 200,
-    BarnardConfigOverrides? overrides,
+    MockBarnardOverrides? overrides,
   })  : _tickMs = tickMs.clamp(50, 2000),
         _random = Random(),
         _overrides = overrides {
@@ -38,7 +49,7 @@ class MockBarnard implements BarnardClient {
 
   final int _tickMs;
   final Random _random;
-  final BarnardConfigOverrides? _overrides;
+  final MockBarnardOverrides? _overrides;
 
   late final List<MockPeer> _peers;
 

@@ -16,7 +16,8 @@ Design goals
 
 ```dart
 import "package:barnard/barnard.dart";
+import "package:barnard/mock_barnard.dart";
 
-final barnard = Barnard.mock();
+final barnard = MockBarnard();
 await barnard.startAuto();
 ```

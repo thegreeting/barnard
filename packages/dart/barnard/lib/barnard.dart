@@ -1,7 +1,5 @@
 library barnard;
 
-export "src/barnard.dart";
-
 // domain
 export "src/domain/capabilities.dart";
 export "src/domain/config.dart";

@@ -1,9 +1,10 @@
 import "dart:async";
 
 import "package:barnard/barnard.dart";
+import "package:barnard/mock_barnard.dart";
 
 Future<void> main() async {
-  final BarnardClient barnard = Barnard.mock(simulatedPeerCount: 50);
+  final BarnardClient barnard = MockBarnard(simulatedPeerCount: 50);
 
   final StreamSubscription sub = barnard.events.listen((BarnardEvent e) {
     print("[event] ${e.runtimeType} @ ${e.timestamp.toIso8601String()}");

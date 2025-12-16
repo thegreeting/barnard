@@ -1,11 +1,12 @@
 import "dart:async";
 
 import "package:barnard/barnard.dart";
+import "package:barnard/mock_barnard.dart";
 import "package:test/test.dart";
 
 void main() {
   test("mock emits DetectionEvent and stores RSSI samples", () async {
-    final BarnardClient barnard = Barnard.mock(simulatedPeerCount: 10, tickMs: 100);
+    final BarnardClient barnard = MockBarnard(simulatedPeerCount: 10, tickMs: 100);
 
     final List<DetectionEvent> detections = <DetectionEvent>[];
     final StreamSubscription sub = barnard.events.listen((BarnardEvent e) {
