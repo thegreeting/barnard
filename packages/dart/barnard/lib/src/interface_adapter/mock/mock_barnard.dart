@@ -258,7 +258,7 @@ class MockBarnard implements BarnardClient {
   }
 
   void _emitDebug(DebugLevel level, String name, Map<String, Object?> data) {
-    final _DebugEvent e = _DebugEvent(timestamp: DateTime.now(), level: level, name: name, data: data);
+    final DebugEvent e = DebugEvent(timestamp: DateTime.now(), level: level, name: name, data: data);
     _debugBuffer.add(e);
     _debugEvents.add(e);
   }
@@ -315,15 +315,6 @@ class MockBarnard implements BarnardClient {
     }
     return true;
   }
-}
-
-final class _DebugEvent extends BarnardDebugEvent {
-  const _DebugEvent({
-    required super.timestamp,
-    required super.level,
-    required super.name,
-    super.data,
-  });
 }
 
 class _RssiAgg {

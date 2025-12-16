@@ -15,7 +15,7 @@ sealed class BarnardEvent {
 
 final class DetectionEvent extends BarnardEvent {
   const DetectionEvent({
-    required super.timestamp,
+    required DateTime timestamp,
     required this.rpid,
     required this.rssi,
     required this.transport,
@@ -23,7 +23,7 @@ final class DetectionEvent extends BarnardEvent {
     required this.displayId,
     this.rssiSummary,
     this.payloadRaw,
-  });
+  }) : super(timestamp);
 
   final Uint8List rpid;
   final int rssi;
@@ -42,10 +42,10 @@ final class DetectionEvent extends BarnardEvent {
 
 final class StateEvent extends BarnardEvent {
   const StateEvent({
-    required super.timestamp,
+    required DateTime timestamp,
     required this.state,
     this.reasonCode,
-  });
+  }) : super(timestamp);
 
   final BarnardState state;
   final String? reasonCode;
@@ -53,11 +53,11 @@ final class StateEvent extends BarnardEvent {
 
 final class ConstraintEvent extends BarnardEvent {
   const ConstraintEvent({
-    required super.timestamp,
+    required DateTime timestamp,
     required this.code,
     this.message,
     this.requiredAction,
-  });
+  }) : super(timestamp);
 
   final String code;
   final String? message;
@@ -66,11 +66,11 @@ final class ConstraintEvent extends BarnardEvent {
 
 final class ErrorEvent extends BarnardEvent {
   const ErrorEvent({
-    required super.timestamp,
+    required DateTime timestamp,
     required this.code,
     required this.message,
     this.recoverable,
-  });
+  }) : super(timestamp);
 
   final String code;
   final String message;
@@ -93,3 +93,12 @@ sealed class BarnardDebugEvent {
 }
 
 enum DebugLevel { trace, info, warn, error }
+
+final class DebugEvent extends BarnardDebugEvent {
+  const DebugEvent({
+    required DateTime timestamp,
+    required DebugLevel level,
+    required String name,
+    Map<String, Object?>? data,
+  }) : super(timestamp: timestamp, level: level, name: name, data: data);
+}
