@@ -25,6 +25,8 @@ jobs:
         run: |
           flutter pub get
           flutter analyze
+          flutter test
+          flutter build apk --debug
 
   smoke:
     runs-on: ubuntu-latest
