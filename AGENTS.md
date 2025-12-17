@@ -36,6 +36,24 @@ Notes:
 - Do not add device-unique persistent identifiers to on-wire payload formats.
 - Keep mock/simulation implementations bounded (avoid unbounded memory growth).
 
+## Git Commit Messages
+
+Use **Conventional Commits** for PR-ready changes.
+
+Format:
+
+`<type>(<scope>): <summary>`
+
+Where:
+- `type`: `feat | fix | refactor | docs | test | chore | ci`
+- `scope` (optional): short area label like `flutter`, `android`, `ios`, `schema`, `spec`
+- `summary`: imperative, present tense, no trailing period
+
+Examples:
+- `feat(flutter): add GATT-first BLE transport + PoC app`
+- `fix(android): handle missing BLUETOOTH_CONNECT permission`
+- `docs(spec): clarify RPID delivery via GATT`
+
 ## Spec Kit workflow (detailed)
 
 Treat `specs/` and `schema/` as the source of truth. Implementation follows the spec, not the other way around.
