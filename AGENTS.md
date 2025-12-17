@@ -27,6 +27,9 @@ Notes:
 
 - Do not assume CI is green without checking the PR’s head commit status/checks.
 - If the repo uses required checks, treat “neutral”/“skipped” as non-success unless explicitly documented as acceptable.
+- When opening a PR, always link the related issues in the PR description:
+  - Use `Closes #<issue>` for the primary issue/epic when appropriate.
+  - Use `Refs #<issue>` for supporting/sub-issues.
 
 ## Rules
 
