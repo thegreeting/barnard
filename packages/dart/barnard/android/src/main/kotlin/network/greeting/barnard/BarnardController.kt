@@ -58,8 +58,6 @@ internal class BarnardController(
     private val bluetoothManager: BluetoothManager? =
         appContext.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private val adapter: BluetoothAdapter? = bluetoothManager?.adapter
-    private val scanner: BluetoothLeScanner? = adapter?.bluetoothLeScanner
-    private val advertiser: BluetoothLeAdvertiser? = adapter?.bluetoothLeAdvertiser
 
     private var gattServer: BluetoothGattServer? = null
 
@@ -190,7 +188,7 @@ internal class BarnardController(
             emitConstraint("permission_denied", "Missing BLUETOOTH_SCAN permission", requiredAction = "grant_permission")
             return
         }
-        val s = scanner ?: run {
+        val s = adapter?.bluetoothLeScanner ?: run {
             emitError("scan_failed", "BluetoothLeScanner is null", recoverable = true)
             return
         }
@@ -209,7 +207,7 @@ internal class BarnardController(
     private fun stopScan() {
         if (!isScanning) return
         if (hasScanPermission()) {
-            scanner?.stopScan(scanCallback)
+            adapter?.bluetoothLeScanner?.stopScan(scanCallback)
         }
         isScanning = false
         connectQueue.clear()
@@ -236,7 +234,7 @@ internal class BarnardController(
             emitConstraint("advertise_unsupported", "Multiple advertisement not supported")
             return
         }
-        val adv = advertiser ?: run {
+        val adv = a.bluetoothLeAdvertiser ?: run {
             emitError("advertise_failed", "BluetoothLeAdvertiser is null", recoverable = true)
             return
         }
@@ -262,7 +260,7 @@ internal class BarnardController(
     private fun stopAdvertise() {
         if (!isAdvertising) return
         if (hasAdvertisePermission()) {
-            advertiser?.stopAdvertising(advertiseCallback)
+            adapter?.bluetoothLeAdvertiser?.stopAdvertising(advertiseCallback)
         }
         isAdvertising = false
         gattServer?.close()

@@ -75,7 +75,13 @@ class _MyAppState extends State<MyApp> {
       Permission.bluetoothAdvertise,
       Permission.locationWhenInUse,
     ];
-    await perms.request();
+
+    print("--- Requesting permissions ---");
+    final Map<Permission, PermissionStatus> results = await perms.request();
+    results.forEach((p, s) {
+      print("${p.toString()}: $s");
+    });
+    print("------------------------------");
   }
 
   Future<void> _run(Future<void> Function(BarnardBleClient client) action) async {
@@ -97,73 +103,72 @@ class _MyAppState extends State<MyApp> {
     return MaterialApp(
       home: Scaffold(
         appBar: AppBar(title: const Text("Barnard BLE PoC (GATT-first)")),
-        body: client == null
-            ? const Center(child: CircularProgressIndicator())
-            : Column(
-                children: <Widget>[
-                  Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: <Widget>[
-                        FilledButton(
-                          onPressed: _busy ? null : () => _run((c) => c.startScan(const ScanConfig(allowDuplicates: true))),
-                          child: const Text("Start Scan"),
-                        ),
-                        OutlinedButton(
-                          onPressed: _busy ? null : () => _run((c) => c.stopScan()),
-                          child: const Text("Stop Scan"),
-                        ),
-                        FilledButton(
-                          onPressed: _busy ? null : () => _run((c) => c.startAdvertise(const AdvertiseConfig())),
-                          child: const Text("Start Advertise"),
-                        ),
-                        OutlinedButton(
-                          onPressed: _busy ? null : () => _run((c) => c.stopAdvertise()),
-                          child: const Text("Stop Advertise"),
-                        ),
-                        FilledButton(
-                          onPressed: _busy ? null : () => _run((c) => c.startAuto(const AutoConfig())),
-                          child: const Text("Start Auto"),
-                        ),
-                        OutlinedButton(
-                          onPressed: _busy ? null : () => _run((c) => c.stopAuto()),
-                          child: const Text("Stop Auto"),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    child: Row(
-                      children: <Widget>[
-                        Expanded(child: Text("State: $_state")),
-                        Text("caps: ${client.capabilities.supportedTransports.map((e) => e.name).join(",")}"),
-                      ],
-                    ),
-                  ),
-                  const Divider(),
-                  Expanded(
-                    child: DefaultTabController(
-                      length: 2,
-                      child: Column(
+        body:
+            client == null
+                ? const Center(child: CircularProgressIndicator())
+                : Column(
+                  children: <Widget>[
+                    Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
                         children: <Widget>[
-                          const TabBar(tabs: <Tab>[Tab(text: "Events"), Tab(text: "Debug")]),
-                          Expanded(
-                            child: TabBarView(
-                              children: <Widget>[
-                                _EventList(events: _events),
-                                _DebugList(events: _debugEvents),
-                              ],
-                            ),
+                          FilledButton(
+                            onPressed:
+                                _busy ? null : () => _run((c) => c.startScan(const ScanConfig(allowDuplicates: true))),
+                            child: const Text("Start Scan"),
+                          ),
+                          OutlinedButton(
+                            onPressed: _busy ? null : () => _run((c) => c.stopScan()),
+                            child: const Text("Stop Scan"),
+                          ),
+                          FilledButton(
+                            onPressed: _busy ? null : () => _run((c) => c.startAdvertise(const AdvertiseConfig())),
+                            child: const Text("Start Advertise"),
+                          ),
+                          OutlinedButton(
+                            onPressed: _busy ? null : () => _run((c) => c.stopAdvertise()),
+                            child: const Text("Stop Advertise"),
+                          ),
+                          FilledButton(
+                            onPressed: _busy ? null : () => _run((c) => c.startAuto(const AutoConfig())),
+                            child: const Text("Start Auto"),
+                          ),
+                          OutlinedButton(
+                            onPressed: _busy ? null : () => _run((c) => c.stopAuto()),
+                            child: const Text("Stop Auto"),
                           ),
                         ],
                       ),
                     ),
-                  ),
-                ],
-              ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Row(
+                        children: <Widget>[
+                          Expanded(child: Text("State: $_state")),
+                          Text("caps: ${client.capabilities.supportedTransports.map((e) => e.name).join(",")}"),
+                        ],
+                      ),
+                    ),
+                    const Divider(),
+                    Expanded(
+                      child: DefaultTabController(
+                        length: 2,
+                        child: Column(
+                          children: <Widget>[
+                            const TabBar(tabs: <Tab>[Tab(text: "Events"), Tab(text: "Debug")]),
+                            Expanded(
+                              child: TabBarView(
+                                children: <Widget>[_EventList(events: _events), _DebugList(events: _debugEvents)],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
       ),
     );
   }
@@ -195,18 +200,10 @@ class _EventList extends StatelessWidget {
           );
         }
         if (e is ConstraintEvent) {
-          return ListTile(
-            dense: true,
-            title: Text("constraint ${e.code}"),
-            subtitle: Text(e.message ?? "-"),
-          );
+          return ListTile(dense: true, title: Text("constraint ${e.code}"), subtitle: Text(e.message ?? "-"));
         }
         if (e is ErrorEvent) {
-          return ListTile(
-            dense: true,
-            title: Text("error ${e.code}"),
-            subtitle: Text(e.message),
-          );
+          return ListTile(dense: true, title: Text("error ${e.code}"), subtitle: Text(e.message));
         }
         return ListTile(dense: true, title: Text(e.runtimeType.toString()));
       },
