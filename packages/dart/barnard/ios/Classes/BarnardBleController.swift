@@ -38,8 +38,8 @@ final class BarnardBleController: NSObject {
   private let cooldownPerPeerSeconds: TimeInterval = 10
   private let maxConnectQueue = 20
 
-  let eventsStreamHandler: FlutterStreamHandler
-  let debugEventsStreamHandler: FlutterStreamHandler
+  let eventsStreamHandler: BarnardStreamHandler
+  let debugEventsStreamHandler: BarnardStreamHandler
 
   private var eventSink: FlutterEventSink?
   private var debugEventSink: FlutterEventSink?
