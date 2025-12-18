@@ -311,10 +311,10 @@ extension BarnardBleController: CBCentralManagerDelegate {
     discoveredRssi[peripheral.identifier] = RSSI.intValue
     discoveredAt[peripheral.identifier] = now
 
-    emitDebug(level: "trace", name: "discovered", data: [
+    emitDebug(level: "trace", name: "ble_discovery_result", data: [
       "id": peripheral.identifier.uuidString,
       "rssi": RSSI.intValue,
-      "localName": (advertisementData[CBAdvertisementDataLocalNameKey] as? String) as Any,
+      "name": (advertisementData[CBAdvertisementDataLocalNameKey] as? String) as Any,
     ])
 
     enqueueConnect(peripheral)

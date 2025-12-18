@@ -441,6 +441,13 @@ internal class BarnardController(
         }
         discoveredRssi[address] = result.rssi
         discoveredAt[address] = nowMs
+
+        emitDebug("trace", "ble_discovery_result", mapOf(
+            "id" to address,
+            "rssi" to result.rssi,
+            "name" to result.scanRecord?.deviceName
+        ))
+
         enqueueConnect(device)
     }
 
