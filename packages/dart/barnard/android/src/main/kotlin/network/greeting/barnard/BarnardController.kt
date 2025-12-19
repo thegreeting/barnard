@@ -194,11 +194,12 @@ internal class BarnardController(
         }
         if (isScanning) return
 
-        val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(serviceUuid)).build()
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
-        s.startScan(listOf(filter), settings, scanCallback)
+        // Scan without a filter and apply Barnard matching in code.
+        // This improves iOS discoverability when the service UUID is not present.
+        s.startScan(emptyList(), settings, scanCallback)
         isScanning = true
         emitState("scan_start")
         emitDebug("info", "scan_start", mapOf("allowDuplicates" to allowDuplicates))
@@ -434,6 +435,7 @@ internal class BarnardController(
     private fun handleScanResult(result: ScanResult) {
         val device = result.device ?: return
         val address = device.address ?: return
+        if (!isBarnardScanResult(result)) return
         val nowMs = System.currentTimeMillis()
         if (!allowDuplicates) {
             val last = discoveredAt[address]
@@ -449,6 +451,15 @@ internal class BarnardController(
         ))
 
         enqueueConnect(device)
+    }
+
+    private fun isBarnardScanResult(result: ScanResult): Boolean {
+        val record = result.scanRecord ?: return false
+        val uuids = record.serviceUuids
+        val hasService = uuids?.any { it.uuid == serviceUuid } == true
+        if (hasService) return true
+        // Local Name fallback for iOS foreground advertise.
+        return record.deviceName == "BNRD"
     }
 
     private fun enqueueConnect(device: BluetoothDevice) {
@@ -581,4 +592,3 @@ internal class BarnardController(
         }
     }
 }
-

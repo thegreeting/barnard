@@ -181,10 +181,30 @@ Both platforms MUST use the same service UUID, characteristic UUID, and 17-byte 
 - Host app MUST provide required Info.plist keys (documented in README for the PoC app).
 - Advertise constraints MUST be surfaced as ConstraintEvent/ErrorEvent with reason codes (no silent failure).
 
+#### iOS Advertise constraints (CoreBluetooth)
+
+CoreBluetooth imposes strict limits on what iOS can Advertise and how reliably it is discoverable:
+- iOS Peripheral advertising only supports `CBAdvertisementDataLocalNameKey` and `CBAdvertisementDataServiceUUIDsKey`.
+- Advertising payload size is small; excess Service UUIDs can be moved to an overflow area.
+- Background advertising changes behavior: Local Name is not advertised, and all Service UUIDs are placed in the overflow area.
+- Advertising is "best effort" and can be throttled when many apps are advertising.
+
+**Impact on Android Scan**
+- Android cannot discover iOS service UUIDs when they are placed in the overflow area.
+- Therefore, **Android Central will often fail to discover iOS Peripheral when the iOS app is in the background**, even if Android is actively Scanning.
+
+**PoC guidance**
+- Keep the iOS app in the foreground during Advertise tests.
+- Advertise only the single Barnard Discovery Service UUID to avoid overflow.
+
 ### Android
 
 - Required permissions MUST be documented and validated (ConstraintEvent/ErrorEvent on missing permissions).
 - Advertise limitations (device does not support, settings disabled, etc.) MUST be surfaced with reason codes.
+- Scan SHOULD apply a local filter fallback for iOS foreground advertising:
+  - Prefer Discovery Service UUID match when available.
+  - If Service UUID is absent, accept `Local Name = BNRD` as a best-effort fallback.
+  - Rationale: iOS advertising can omit Service UUIDs due to payload constraints.
 
 ## Success criteria (Definition of Done)
 
