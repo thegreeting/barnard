@@ -159,7 +159,15 @@ final class BarnardBleController: NSObject {
     peripheralManager.startAdvertising(ad)
     isAdvertising = true
     emitState(reasonCode: "advertise_start")
-    emitDebug(level: "info", name: "advertise_start", data: ["formatVersion": Int(formatVersion)])
+    emitDebug(
+      level: "info",
+      name: "advertise_start",
+      data: [
+        "formatVersion": Int(formatVersion),
+        "serviceUuid": discoveryServiceUUID.uuidString,
+        "localName": localName,
+      ]
+    )
   }
 
   private func stopAdvertise() {
@@ -413,7 +421,19 @@ extension BarnardBleController: CBPeripheralManagerDelegate {
     let payload = rpid.currentPayload(formatVersion: formatVersion, now: Date())
     request.value = payload
     peripheral.respond(to: request, withResult: .success)
-    emitDebug(level: "trace", name: "gatt_read_rpid", data: ["bytes": payload.count])
+    var displayId = ""
+    if payload.count >= 5 {
+      let bytes = payload.subdata(in: 1 ..< 5)
+      displayId = bytes.map { String(format: "%02x", $0) }.joined()
+    }
+    emitDebug(
+      level: "trace",
+      name: "gatt_read_rpid",
+      data: [
+        "bytes": payload.count,
+        "formatVersion": Int(formatVersion),
+        "displayId": displayId,
+      ]
+    )
   }
 }
-

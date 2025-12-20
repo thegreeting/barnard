@@ -205,6 +205,7 @@ CoreBluetooth imposes strict limits on what iOS can Advertise and how reliably i
   - Prefer Discovery Service UUID match when available.
   - If Service UUID is absent, accept `Local Name = BNRD` as a best-effort fallback.
   - Rationale: iOS advertising can omit Service UUIDs due to payload constraints.
+- For PoC diagnostics, Android MAY treat any connectable ScanResult as a candidate and confirm via GATT service discovery.
 
 ## Success criteria (Definition of Done)
 

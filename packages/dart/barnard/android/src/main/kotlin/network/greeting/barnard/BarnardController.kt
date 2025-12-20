@@ -255,7 +255,15 @@ internal class BarnardController(
         adv.startAdvertising(settings, data, advertiseCallback)
         isAdvertising = true
         emitState("advertise_start")
-        emitDebug("info", "advertise_start", mapOf("formatVersion" to formatVersion))
+        emitDebug(
+            "info",
+            "advertise_start",
+            mapOf(
+                "formatVersion" to formatVersion,
+                "serviceUuid" to serviceUuid.toString(),
+                "localName" to "BNRD",
+            )
+        )
     }
 
     private fun stopAdvertise() {
@@ -435,7 +443,19 @@ internal class BarnardController(
     private fun handleScanResult(result: ScanResult) {
         val device = result.device ?: return
         val address = device.address ?: return
-        if (!isBarnardScanResult(result)) return
+        if (!isBarnardScanResult(result)) {
+            emitDebug(
+                "trace",
+                "scan_ignored",
+                mapOf(
+                    "address" to address,
+                    "name" to result.scanRecord?.deviceName,
+                    "hasService" to (result.scanRecord?.serviceUuids?.any { it.uuid == serviceUuid } == true),
+                    "isConnectable" to isConnectableResult(result),
+                )
+            )
+            return
+        }
         val nowMs = System.currentTimeMillis()
         if (!allowDuplicates) {
             val last = discoveredAt[address]
@@ -459,7 +479,17 @@ internal class BarnardController(
         val hasService = uuids?.any { it.uuid == serviceUuid } == true
         if (hasService) return true
         // Local Name fallback for iOS foreground advertise.
-        return record.deviceName == "BNRD"
+        if (record.deviceName == "BNRD") return true
+        // PoC fallback: try any connectable result and validate via GATT.
+        return isConnectableResult(result)
+    }
+
+    private fun isConnectableResult(result: ScanResult): Boolean {
+        return if (Build.VERSION.SDK_INT >= 26) {
+            result.isConnectable
+        } else {
+            true
+        }
     }
 
     private fun enqueueConnect(device: BluetoothDevice) {
@@ -588,7 +618,20 @@ internal class BarnardController(
                 else if (offset >= payload.size) ByteArray(0)
                 else payload.copyOfRange(offset, payload.size)
             server.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, slice)
-            emitDebug("trace", "gatt_read_rpid", mapOf("bytes" to payload.size))
+            emitDebug(
+                "trace",
+                "gatt_read_rpid",
+                mapOf(
+                    "bytes" to payload.size,
+                    "formatVersion" to (payload[0].toInt() and 0xFF),
+                    "displayId" to displayIdForPayload(payload),
+                )
+            )
         }
+    }
+
+    private fun displayIdForPayload(payload: ByteArray): String {
+        if (payload.size < 5) return ""
+        return payload.copyOfRange(1, 5).joinToString("") { b -> "%02x".format(b) }
     }
 }
