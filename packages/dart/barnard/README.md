@@ -42,8 +42,48 @@ flutter run
 
 ### Android
 
-- Android 12+ requires runtime permissions: `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT`, `BLUETOOTH_ADVERTISE`.
-- Android 11 and below requires location permission for scanning.
+#### Permissions
+
+**Android 12+ (API 31+):**
+
+Add the following to your `AndroidManifest.xml`:
+
+```xml
+<!-- BLE permissions for Android 12+ -->
+<uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+    android:usesPermissionFlags="neverForLocation" />
+<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+<uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+
+<!-- Legacy permissions for Android 11 and below -->
+<uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+<uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="28" />
+
+<uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+```
+
+**Important:** The `neverForLocation` flag on `BLUETOOTH_SCAN` eliminates the need for location permission on Android 12+. Without this flag, `ACCESS_FINE_LOCATION` is required and users must grant "Precise location" (not just "Approximate") for BLE scanning to work.
+
+#### Runtime Permission Request
+
+With the `neverForLocation` flag, only request Bluetooth permissions at runtime:
+
+```dart
+// Android 12+ with neverForLocation flag - no location needed
+await [
+  Permission.bluetoothScan,
+  Permission.bluetoothConnect,
+  Permission.bluetoothAdvertise,
+].request();
+```
+
+#### Scan Filter
+
+The SDK uses a Service UUID filter (`0000B001-0000-1000-8000-00805F9B34FB`) for efficient scanning. This reduces battery consumption and filters out non-Barnard devices at the system level.
+
+**Note:** iOS devices in background mode may not include the Service UUID in advertisement data (moved to "overflow area"). Foreground advertising works reliably.
 
 ## Channels
 
