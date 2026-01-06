@@ -38,6 +38,9 @@ import java.nio.ByteOrder
 import java.util.UUID
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
+import android.util.Log
+
+private const val TAG = "BarnardBLE"
 
 internal class BarnardController(
     private val appContext: Context,
@@ -194,22 +197,48 @@ internal class BarnardController(
         }
         if (isScanning) return
 
+        // Stop any previous scan first
+        scanCallback?.let { cb ->
+            try {
+                s.stopScan(cb)
+            } catch (e: Exception) {
+                Log.w(TAG, "stopScan before start failed: ${e.message}")
+            }
+        }
+
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setReportDelay(0)
             .build()
-        // Scan without a filter and apply Barnard matching in code.
-        // This improves iOS discoverability when the service UUID is not present.
-        s.startScan(emptyList(), settings, scanCallback)
+
+        // Create fresh callback
+        val cb = createScanCallback()
+        scanCallback = cb
+
+        // Filter by Barnard service UUID for efficiency
+        val filter = ScanFilter.Builder()
+            .setServiceUuid(ParcelUuid(serviceUuid))
+            .build()
+
+        Log.i(TAG, "Starting BLE scan with scanner: $s, callback: $cb, filter: $serviceUuid")
+        s.startScan(listOf(filter), settings, cb)
         isScanning = true
+
+        // Flush any pending results
+        s.flushPendingScanResults(cb)
+        Log.i(TAG, "BLE scan started (LOW_LATENCY, service UUID filter)")
         emitState("scan_start")
         emitDebug("info", "scan_start", mapOf("allowDuplicates" to allowDuplicates))
     }
 
     private fun stopScan() {
         if (!isScanning) return
-        if (hasScanPermission()) {
-            adapter?.bluetoothLeScanner?.stopScan(scanCallback)
+        scanCallback?.let { cb ->
+            if (hasScanPermission()) {
+                adapter?.bluetoothLeScanner?.stopScan(cb)
+            }
         }
+        scanCallback = null
         isScanning = false
         connectQueue.clear()
         activeGatt?.close()
@@ -424,19 +453,26 @@ internal class BarnardController(
         }
     }
 
-    private val scanCallback = object : ScanCallback() {
-        override fun onScanFailed(errorCode: Int) {
-            emitError("scan_failed", "errorCode=$errorCode", recoverable = true)
-            isScanning = false
-            emitState("scan_failed")
-        }
+    private var scanCallback: ScanCallback? = null
 
-        override fun onScanResult(callbackType: Int, result: ScanResult) {
-            handleScanResult(result)
-        }
+    private fun createScanCallback(): ScanCallback {
+        return object : ScanCallback() {
+            override fun onScanFailed(errorCode: Int) {
+                Log.e(TAG, "onScanFailed: errorCode=$errorCode")
+                emitError("scan_failed", "errorCode=$errorCode", recoverable = true)
+                isScanning = false
+                emitState("scan_failed")
+            }
 
-        override fun onBatchScanResults(results: MutableList<ScanResult>) {
-            for (r in results) handleScanResult(r)
+            override fun onScanResult(callbackType: Int, result: ScanResult) {
+                Log.d(TAG, "onScanResult: ${result.device?.address} name=${result.scanRecord?.deviceName} rssi=${result.rssi}")
+                handleScanResult(result)
+            }
+
+            override fun onBatchScanResults(results: MutableList<ScanResult>) {
+                Log.d(TAG, "onBatchScanResults: ${results.size} results")
+                for (r in results) handleScanResult(r)
+            }
         }
     }
 
@@ -477,11 +513,14 @@ internal class BarnardController(
         val record = result.scanRecord ?: return false
         val uuids = record.serviceUuids
         val hasService = uuids?.any { it.uuid == serviceUuid } == true
+        val name = record.deviceName
+        val isBnrd = name == "BNRD"
+        Log.d(TAG, "isBarnardScanResult: addr=${result.device?.address} name=$name hasService=$hasService isBnrd=$isBnrd uuids=$uuids")
+        // 1. Service UUID match (reliable for Android-to-Android).
         if (hasService) return true
-        // Local Name fallback for iOS foreground advertise.
-        if (record.deviceName == "BNRD") return true
-        // PoC fallback: try any connectable result and validate via GATT.
-        return isConnectableResult(result)
+        // 2. Local Name fallback for iOS foreground advertise.
+        if (isBnrd) return true
+        return false
     }
 
     private fun isConnectableResult(result: ScanResult): Boolean {
