@@ -2,7 +2,7 @@
 
 **Feature Directory**: `specs/003-flutter-poc-real-ble`  
 **Created**: 2025-12-17  
-**Status**: Draft  
+**Status**: Done  
 **Input**: Build a Flutter PoC that performs real BLE **Scan/Advertise** (foreground-only) and surfaces Barnard’s event model to Flutter.
 
 ## Problem statement
