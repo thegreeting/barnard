@@ -90,18 +90,17 @@ class _MyAppState extends State<MyApp> {
   Future<void> _ensurePermissions() async {
     if (!Platform.isAndroid) return;
 
+    print("--- Requesting permissions ---");
+
+    // With neverForLocation flag in manifest, only Bluetooth permissions are needed on Android 12+
     final List<Permission> perms = <Permission>[
       Permission.bluetoothScan,
       Permission.bluetoothConnect,
       Permission.bluetoothAdvertise,
-      Permission.locationWhenInUse,
     ];
-
-    print("--- Requesting permissions ---");
     final Map<Permission, PermissionStatus> results = await perms.request();
-    results.forEach((p, s) {
-      print("${p.toString()}: $s");
-    });
+    results.forEach((p, s) => print("${p.toString()}: $s"));
+
     print("------------------------------");
   }
 
