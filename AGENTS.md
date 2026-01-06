@@ -27,6 +27,9 @@ Notes:
 
 - Do not assume CI is green without checking the PR’s head commit status/checks.
 - If the repo uses required checks, treat “neutral”/“skipped” as non-success unless explicitly documented as acceptable.
+- When opening a PR, always link the related issues in the PR description:
+  - Use `Closes #<issue>` for the primary issue/epic when appropriate.
+  - Use `Refs #<issue>` for supporting/sub-issues.
 
 ## Rules
 
@@ -35,6 +38,24 @@ Notes:
 - Prefer schema-first: update `schema/barnard/v1` (JSON Schema) when changing public shapes.
 - Do not add device-unique persistent identifiers to on-wire payload formats.
 - Keep mock/simulation implementations bounded (avoid unbounded memory growth).
+
+## Git Commit Messages
+
+Use **Conventional Commits** for PR-ready changes.
+
+Format:
+
+`<type>(<scope>): <summary>`
+
+Where:
+- `type`: `feat | fix | refactor | docs | test | chore | ci`
+- `scope` (optional): short area label like `flutter`, `android`, `ios`, `schema`, `spec`
+- `summary`: imperative, present tense, no trailing period
+
+Examples:
+- `feat(flutter): add GATT-first BLE transport + PoC app`
+- `fix(android): handle missing BLUETOOTH_CONNECT permission`
+- `docs(spec): clarify RPID delivery via GATT`
 
 ## Spec Kit workflow (detailed)
 
