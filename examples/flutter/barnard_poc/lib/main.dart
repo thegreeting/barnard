@@ -90,18 +90,13 @@ class _MyAppState extends State<MyApp> {
   Future<void> _ensurePermissions() async {
     if (!Platform.isAndroid) return;
 
-    print("--- Requesting permissions ---");
-
     // With neverForLocation flag in manifest, only Bluetooth permissions are needed on Android 12+
     final List<Permission> perms = <Permission>[
       Permission.bluetoothScan,
       Permission.bluetoothConnect,
       Permission.bluetoothAdvertise,
     ];
-    final Map<Permission, PermissionStatus> results = await perms.request();
-    results.forEach((p, s) => print("${p.toString()}: $s"));
-
-    print("------------------------------");
+    await perms.request();
   }
 
   Future<void> _run(Future<void> Function(BarnardBleClient client) action) async {
@@ -603,7 +598,6 @@ class _SeenCard extends StatelessWidget {
               Builder(builder: (BuildContext context) {
                 final Duration age = now.difference(entry.lastSeen);
                 final bool isStale = age > staleAfter;
-                final bool isActive = !isStale;
                 return Text(
                   "${entry.displayId.isEmpty ? "-" : entry.displayId} age=${age.inSeconds}s rssi=${entry.lastRssi} count=${entry.count}${isStale ? " STALE" : " ACTIVE"}",
                   style: TextStyle(color: isStale ? Colors.orange : Colors.green),
