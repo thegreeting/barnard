@@ -493,7 +493,11 @@ internal class BarnardController(
     }
 
     private fun enqueueConnect(device: BluetoothDevice) {
-        if (activeGatt != null) return
+        val address = device.address ?: return
+        // Skip if already in queue or currently connecting.
+        if (connectQueue.any { it.address == address }) return
+        if (activeGatt?.device?.address == address) return
+
         if (connectQueue.size >= maxConnectQueue) {
             emitDebug("warn", "connect_queue_full", mapOf("max" to maxConnectQueue))
             return
