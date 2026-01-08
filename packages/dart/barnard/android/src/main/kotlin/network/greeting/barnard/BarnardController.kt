@@ -248,6 +248,12 @@ internal class BarnardController(
         connectQueue.clear()
         activeGatt?.close()
         activeGatt = null
+
+        // Clear discovery state for clean restart
+        discoveredRssi.clear()
+        discoveredAt.clear()
+        lastConnectAttemptAtMs.clear()
+
         emitState("scan_stop")
         emitDebug("info", "scan_stop", null)
     }

@@ -141,6 +141,13 @@ final class BarnardBleController: NSObject {
     isScanning = false
     connectQueue.removeAll()
     activePeripheral = nil
+
+    // Clear discovery state for clean restart
+    discoveredRssi.removeAll()
+    discoveredAt.removeAll()
+    peripheralsById.removeAll()
+    lastConnectAttemptAt.removeAll()
+
     emitState(reasonCode: "scan_stop")
     emitDebug(level: "info", name: "scan_stop", data: nil)
   }
