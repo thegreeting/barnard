@@ -79,11 +79,6 @@ internal class BarnardController(
     private val maxConnectQueue: Int = 20
     private val cooldownPerPeerMs: Long = 10_000
 
-    // Hybrid scan: start with LOW_LATENCY, transition to BALANCED after delay
-    private val scanModeTransitionDelayMs: Long = 15_000
-    private var scanModeTransitionRunnable: Runnable? = null
-    private var currentScanMode: Int = ScanSettings.SCAN_MODE_LOW_LATENCY
-
     private val prefs: SharedPreferences =
         appContext.getSharedPreferences("barnard", Context.MODE_PRIVATE)
 
@@ -211,33 +206,33 @@ internal class BarnardController(
             }
         }
 
-        // Start with LOW_LATENCY for fast initial discovery
-        currentScanMode = ScanSettings.SCAN_MODE_LOW_LATENCY
-        startScanWithMode(s, currentScanMode)
+        val settings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setReportDelay(0)
+            .build()
+
+        // Create fresh callback
+        val cb = createScanCallback()
+        scanCallback = cb
+
+        // Filter by Barnard service UUID for efficiency
+        val filter = ScanFilter.Builder()
+            .setServiceUuid(ParcelUuid(serviceUuid))
+            .build()
+
+        Log.i(TAG, "Starting BLE scan with scanner: $s, callback: $cb, filter: $serviceUuid")
+        s.startScan(listOf(filter), settings, cb)
         isScanning = true
 
+        // Flush any pending results
+        s.flushPendingScanResults(cb)
+        Log.i(TAG, "BLE scan started (LOW_LATENCY, service UUID filter)")
         emitState("scan_start")
-        emitDebug("info", "scan_start", mapOf(
-            "allowDuplicates" to allowDuplicates,
-            "scanMode" to "LOW_LATENCY",
-            "transitionDelayMs" to scanModeTransitionDelayMs
-        ))
-
-        // Schedule transition to BALANCED mode after delay
-        scanModeTransitionRunnable = Runnable {
-            if (isScanning) {
-                transitionToBalancedScan()
-            }
-        }
-        mainHandler.postDelayed(scanModeTransitionRunnable!!, scanModeTransitionDelayMs)
+        emitDebug("info", "scan_start", mapOf("allowDuplicates" to allowDuplicates))
     }
 
     private fun stopScan() {
         if (!isScanning) return
-        // Cancel pending scan mode transition
-        scanModeTransitionRunnable?.let { mainHandler.removeCallbacks(it) }
-        scanModeTransitionRunnable = null
-
         scanCallback?.let { cb ->
             if (hasScanPermission()) {
                 adapter?.bluetoothLeScanner?.stopScan(cb)
@@ -250,53 +245,6 @@ internal class BarnardController(
         activeGatt = null
         emitState("scan_stop")
         emitDebug("info", "scan_stop", null)
-    }
-
-    private fun startScanWithMode(scanner: BluetoothLeScanner, scanMode: Int) {
-        val settings = ScanSettings.Builder()
-            .setScanMode(scanMode)
-            .setReportDelay(0)
-            .build()
-
-        val cb = createScanCallback()
-        scanCallback = cb
-
-        val filter = ScanFilter.Builder()
-            .setServiceUuid(ParcelUuid(serviceUuid))
-            .build()
-
-        val modeName = when (scanMode) {
-            ScanSettings.SCAN_MODE_LOW_LATENCY -> "LOW_LATENCY"
-            ScanSettings.SCAN_MODE_BALANCED -> "BALANCED"
-            ScanSettings.SCAN_MODE_LOW_POWER -> "LOW_POWER"
-            else -> "UNKNOWN"
-        }
-        Log.i(TAG, "Starting BLE scan with mode: $modeName")
-        scanner.startScan(listOf(filter), settings, cb)
-        scanner.flushPendingScanResults(cb)
-    }
-
-    private fun transitionToBalancedScan() {
-        val scanner = adapter?.bluetoothLeScanner ?: return
-        if (!hasScanPermission()) return
-
-        // Stop current scan
-        scanCallback?.let { cb ->
-            try {
-                scanner.stopScan(cb)
-            } catch (e: Exception) {
-                Log.w(TAG, "stopScan for transition failed: ${e.message}")
-            }
-        }
-
-        // Restart with BALANCED mode
-        currentScanMode = ScanSettings.SCAN_MODE_BALANCED
-        startScanWithMode(scanner, currentScanMode)
-
-        emitDebug("info", "scan_mode_transition", mapOf(
-            "from" to "LOW_LATENCY",
-            "to" to "BALANCED"
-        ))
     }
 
     private fun startAdvertise() {
@@ -325,7 +273,7 @@ internal class BarnardController(
         ensureGattServer()
 
         val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
+            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
             .setConnectable(true)
             .build()
