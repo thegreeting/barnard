@@ -194,6 +194,10 @@ class BarnardScannerDeviceLabTest {
                             "receiverState=${event.envelope.receiverState} " +
                             "bytes=${event.envelope.rawContainer.size}",
                     )
+                    is BarnardEvent.RelayDecision -> marker(
+                        "BARNARD_EVT relay_decision decision=${event.relay.decision} " +
+                            "hop=${event.relay.hop} reason=${event.relay.reason}",
+                    )
                 }
             }
         }

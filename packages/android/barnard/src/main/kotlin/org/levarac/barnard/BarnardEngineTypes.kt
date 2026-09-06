@@ -212,6 +212,37 @@ public class BarnardEventInfoEnvelopeV2Event(
     public val verifiedEnvelope: BarnardB005VerifiedEnvelope? get() = receipt.verifiedEnvelope
 }
 
+/**
+ * What the spec 134 density controller decided about the selected envelope.
+ *
+ * The controller renews a lease by ending the old one and electing again, so a
+ * [KEEP] is always preceded by a [STOP] for the same digest. [KEEP] is the
+ * engine's name for "elected again with the digest that was just being served";
+ * the relay itself draws no distinction.
+ */
+public enum class BarnardRelayDecision { BROADCAST, KEEP, STOP }
+
+/**
+ * A spec 134 relay decision, surfaced so a host can observe whether and why an
+ * envelope was re-broadcast. No peer handle, election secret, or density count
+ * leaves the controller: the envelope is identified by its payload digest,
+ * which is already derivable from the bytes on the wire.
+ */
+public class BarnardRelayDecisionEvent(
+    public val decision: BarnardRelayDecision,
+    /** `SHA256(signedEnvelope)` of the envelope the decision is about. */
+    public val payloadDigest: ByteArray,
+    /**
+     * The `relayHopCount` this device serves (observed minimum + 1). For
+     * [BarnardRelayDecision.STOP] it is the hop last served.
+     */
+    public val hop: Int,
+    /** `elected`, `renewed`, `lease_ended`, `host_stop`, or `definition_invalidated`. */
+    public val reason: String,
+    /** The peer whose observation triggered the decision, when one did. */
+    public val peripheralId: String?,
+)
+
 public sealed class BarnardEvent {
     public data class State(val state: BarnardState) : BarnardEvent()
     public data class Constraint(val constraint: BarnardConstraintEvent) : BarnardEvent()
@@ -220,6 +251,7 @@ public sealed class BarnardEvent {
     public data class RssiUpdate(val update: BarnardRssiUpdateEvent) : BarnardEvent()
     public data class EventInfoHint(val hint: BarnardEventInfoHintEvent) : BarnardEvent()
     public data class EventInfoEnvelopeV2(val envelope: BarnardEventInfoEnvelopeV2Event) : BarnardEvent()
+    public data class RelayDecision(val relay: BarnardRelayDecisionEvent) : BarnardEvent()
 }
 
 public data class BarnardDebugEvent(

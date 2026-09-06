@@ -31,10 +31,12 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Base64
 import android.util.Log
 import org.levarac.barnard.BarnardCrypto.toHex
+import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -133,6 +135,61 @@ public class BarnardEngine(private val appContext: Context) {
     private val eventInfoSnapshots: MutableMap<String, EventInfoSnapshot> = ConcurrentHashMap()
     private val eventInfoRetryBudget = BarnardEventInfoRetryBudget()
     private var eventInfoDiscoverySession = BarnardEventInfoDiscoverySession(System.currentTimeMillis())
+
+    // MARK: - Spec 134 participant relay
+    //
+    // Every field below is read and written only under [eventInfoStateLock]:
+    // observations arrive on a binder thread while the GATT server answers
+    // reads on another, and BarnardParticipantRelay is not thread-safe.
+
+    private var relayVerifier: BarnardRelayVerifier? = null
+    private var relayJoinedEventProvider: BarnardRelayJoinedEventProvider? = null
+    private var relaySeedMaterial: ByteArray = ByteArray(0)
+    private var relayClock: BarnardRelayMonotonicClock? = null
+    private var relayEninSource: BarnardRelayEninSource? = null
+    private var participantRelay: BarnardParticipantRelay? = null
+    private var relayServedContainer: ByteArray? = null
+    private var relayLastServedDigest: ByteArray? = null
+    /**
+     * Set around each relay call so the sink can name the cause of a start or
+     * stop. The relay's sink interface carries no reason of its own.
+     */
+    private var relayDecisionReason: String = "elected"
+    private var relayTriggerPeripheralId: String? = null
+    /** Decisions produced under the lock, emitted after it is released. */
+    private val relayPendingDecisions = mutableListOf<BarnardRelayDecisionEvent>()
+
+    private val relaySink = object : BarnardRelayOutputSink {
+        override fun start(container: ByteArray) {
+            relayServedContainer = container
+            val envelope = if (container.size > 4) container.copyOfRange(4, container.size) else ByteArray(0)
+            val digest = MessageDigest.getInstance("SHA-256").digest(envelope)
+            val keep = relayLastServedDigest?.contentEquals(digest) == true
+            relayLastServedDigest = digest
+            val hop = if (container.size > 1) container[1].toInt() and 0xFF else 0
+            val reason = if (keep) "renewed" else relayDecisionReason
+            relayPendingDecisions += BarnardRelayDecisionEvent(
+                decision = if (keep) BarnardRelayDecision.KEEP else BarnardRelayDecision.BROADCAST,
+                payloadDigest = digest,
+                hop = hop,
+                reason = reason,
+                peripheralId = relayTriggerPeripheralId,
+            )
+        }
+
+        override fun stop() {
+            val container = relayServedContainer
+            relayServedContainer = null
+            val hop = if ((container?.size ?: 0) > 1) container!![1].toInt() and 0xFF else 0
+            relayPendingDecisions += BarnardRelayDecisionEvent(
+                decision = BarnardRelayDecision.STOP,
+                payloadDigest = relayLastServedDigest ?: ByteArray(0),
+                hop = hop,
+                reason = relayDecisionReason,
+                peripheralId = relayTriggerPeripheralId,
+            )
+        }
+    }
     @Volatile
     private var currentTek: ByteArray = ByteArray(16)
 
@@ -304,6 +361,159 @@ public class BarnardEngine(private val appContext: Context) {
         eventInfoServePolicy = BarnardEventInfoServePolicy(organizerDesignated, eventActiveForDiscovery)
         eventInfoDisplayName = eventDisplayName
     }
+
+    /**
+     * Enables spec 134 participant relay, or disables it when [verifier] is null.
+     *
+     * The verifier is host-supplied on purpose. Spec 134 step 3 requires the
+     * authoritative on-chain definition before an envelope may be relayed, and
+     * the SDK has no registry access, so only a
+     * [BarnardRelayVerification.RegistryVerified] answer from the host unlocks
+     * re-broadcast. The engine pre-filters on its own radio verification: an
+     * unverified container never reaches this verifier.
+     *
+     * [clock] and [eninSource] default to elapsed real time and the engine's
+     * own B004 ENIN; they exist so tests can step 30-second decision epochs.
+     */
+    @JvmOverloads
+    public fun configureParticipantRelay(
+        verifier: BarnardRelayVerifier?,
+        joinedEventProvider: BarnardRelayJoinedEventProvider? = null,
+        randomnessSeedMaterial: ByteArray? = null,
+        clock: BarnardRelayMonotonicClock? = null,
+        eninSource: BarnardRelayEninSource? = null,
+    ) {
+        val decisions = synchronized(eventInfoStateLock) {
+            tearDownParticipantRelayLocked("definition_invalidated")
+            relayVerifier = verifier
+            relayJoinedEventProvider = joinedEventProvider
+            relayClock = clock
+            relayEninSource = eninSource
+            relaySeedMaterial = randomnessSeedMaterial
+                ?: MessageDigest.getInstance("SHA-256").digest(getOrCreateDeviceSecret())
+            drainRelayDecisionsLocked()
+        }
+        emitRelayDecisions(decisions)
+        emitDebug("info", "relay_configured", mapOf("enabled" to (verifier != null)))
+    }
+
+    /**
+     * Runs the relay's expiry, selection, contention, and lease decisions.
+     * Hosts call this at their scheduled policy wake-up; the engine also calls
+     * it on every observation and before answering a B005 read.
+     */
+    public fun advanceParticipantRelay() {
+        val decisions = synchronized(eventInfoStateLock) { advanceParticipantRelayLocked() }
+        emitRelayDecisions(decisions)
+    }
+
+    /** True while this device is re-broadcasting a relayed envelope. */
+    public val isRelayServing: Boolean
+        get() = synchronized(eventInfoStateLock) { participantRelay?.isServing == true }
+
+    private fun advanceParticipantRelayLocked(): List<BarnardRelayDecisionEvent> {
+        val relay = participantRelay ?: return emptyList()
+        relayDecisionReason = if (relay.isServing) "lease_ended" else "elected"
+        relayTriggerPeripheralId = null
+        relay.advance()
+        return drainRelayDecisionsLocked()
+    }
+
+    private fun ensureParticipantRelayLocked(): BarnardParticipantRelay? {
+        val verifier = relayVerifier ?: return null
+        participantRelay?.let { return it }
+        val relay = BarnardParticipantRelay(
+            clock = relayClock ?: BarnardRelayMonotonicClock { SystemClock.elapsedRealtime() },
+            eninSource = relayEninSource ?: BarnardRelayEninSource { currentEnin().toLong() },
+            verifier = verifier,
+            sink = relaySink,
+            joinedEventProvider = relayJoinedEventProvider ?: BarnardRelayJoinedEventProvider { null },
+            randomnessSeedMaterial = relaySeedMaterial,
+        )
+        participantRelay = relay
+        return relay
+    }
+
+    /**
+     * Spec 134: stopping Scan or Advertise clears the lease and the cached
+     * envelope. `hostStop()` is terminal, so the instance is dropped and a
+     * later observation builds a fresh one that rechecks every guard.
+     */
+    private fun tearDownParticipantRelayLocked(reason: String) {
+        val relay = participantRelay ?: return
+        relayDecisionReason = reason
+        relayTriggerPeripheralId = null
+        relay.hostStop()
+        participantRelay = null
+        relayServedContainer = null
+        relayLastServedDigest = null
+    }
+
+    private fun tearDownParticipantRelay(reason: String) {
+        val decisions = synchronized(eventInfoStateLock) {
+            tearDownParticipantRelayLocked(reason)
+            drainRelayDecisionsLocked()
+        }
+        emitRelayDecisions(decisions)
+    }
+
+    private fun drainRelayDecisionsLocked(): List<BarnardRelayDecisionEvent> {
+        if (relayPendingDecisions.isEmpty()) return emptyList()
+        val out = relayPendingDecisions.toList()
+        relayPendingDecisions.clear()
+        return out
+    }
+
+    private fun emitRelayDecisions(decisions: List<BarnardRelayDecisionEvent>) {
+        for (decision in decisions) {
+            emitDebug("info", "relay_decision", mapOf(
+                "decision" to decision.decision.name,
+                "hop" to decision.hop,
+                "reason" to decision.reason,
+            ))
+            mainHandler.post { onEvent?.invoke(BarnardEvent.RelayDecision(decision)) }
+        }
+    }
+
+    /** The relayed container this device is currently serving, if any. */
+    internal fun relayContainerForServing(): ByteArray? =
+        synchronized(eventInfoStateLock) { relayServedContainer }
+
+    /**
+     * The value B005 answers a read at offset zero with.
+     *
+     * Precedence: this device's own event-info value wins over a relayed one.
+     * Spec 134 is silent on the collision, and this is the conservative
+     * reading -- a device that is itself an organizer-designated direct source
+     * must keep serving hop zero rather than demote itself to a forwarder, and
+     * the spec's one-payload-at-a-time rule forbids serving both.
+     */
+    internal fun eventInfoValueForRead(): ByteArray? {
+        val decisions: List<BarnardRelayDecisionEvent>
+        val value: ByteArray?
+        synchronized(eventInfoStateLock) {
+            decisions = advanceParticipantRelayLocked()
+            val own = try {
+                BarnardEventInfoCodec.payloadIfServing(
+                    eventInfoServePolicy,
+                    eventCode,
+                    eventInfoDisplayName,
+                    getEventCodeHash(),
+                )
+            } catch (_: IllegalArgumentException) {
+                null
+            }
+            value = own ?: relayServedContainer
+        }
+        emitRelayDecisions(decisions)
+        return value
+    }
+
+    /**
+     * Observer-local peer handle. Spec 134: never transmitted, never persisted
+     * beyond the density window, never interpreted as a person or a device.
+     */
+    private fun relayPeerHandle(address: String): ByteArray = address.toByteArray(Charsets.UTF_8)
 
     public fun getCurrentEventCode(): String? = eventCode
 
@@ -569,6 +779,9 @@ public class BarnardEngine(private val appContext: Context) {
     }
 
     private fun stopScanInternal() {
+        // Spec 134: stopping Scan clears the relay lease, the density handles,
+        // and the cached envelope, whether or not Scan was actually running.
+        tearDownParticipantRelay("host_stop")
         if (!isScanning) return
         scanCallback?.let { cb ->
             if (hasScanPermission()) {
@@ -685,6 +898,8 @@ public class BarnardEngine(private val appContext: Context) {
     }
 
     private fun stopAdvertiseInternal() {
+        // Spec 134: without Advertise there is no way to serve a relayed value.
+        tearDownParticipantRelay("host_stop")
         if (!isAdvertising) return
         if (hasAdvertisePermission()) {
             adapter?.bluetoothLeAdvertiser?.stopAdvertising(advertiseCallback)
@@ -904,6 +1119,22 @@ public class BarnardEngine(private val appContext: Context) {
             rawContainer = container,
         )
         mainHandler.post { onEvent?.invoke(BarnardEvent.EventInfoEnvelopeV2(event)) }
+
+        // Spec 134: only a receipt that this device verified from the radio is
+        // offered to the relay. The relay's own host-supplied verifier then
+        // applies step 3 (registry agreement) before any re-broadcast.
+        if (receipt !is BarnardB005EnvelopeV2Receipt.RadioSelfVerified) return
+        val decisions = synchronized(eventInfoStateLock) {
+            val relay = ensureParticipantRelayLocked() ?: return@synchronized emptyList()
+            relayDecisionReason = "elected"
+            relayTriggerPeripheralId = address
+            relay.observe(container, relayPeerHandle(address))
+            relayDecisionReason = if (relay.isServing) "lease_ended" else "elected"
+            relay.advance()
+            relayTriggerPeripheralId = null
+            drainRelayDecisionsLocked()
+        }
+        emitRelayDecisions(decisions)
     }
 
     /**
@@ -1807,26 +2038,19 @@ public class BarnardEngine(private val appContext: Context) {
     @SuppressLint("MissingPermission")
     private fun respondEventInfoRead(server: BluetoothGattServer, device: BluetoothDevice, requestId: Int, offset: Int) {
         data class Outcome(val status: Int, val value: ByteArray?)
+        // Own value vs relayed value is decided here, outside the lock's
+        // snapshot bookkeeping, because it advances the relay first.
+        val offsetZeroValue = if (offset == 0) eventInfoValueForRead() else null
         val outcome = synchronized(eventInfoStateLock) {
             val now = System.currentTimeMillis()
             eventInfoSnapshots.entries.removeIf { now - it.value.lastRequestAtMs > 30_000L }
             val address = device.address ?: ""
             val key = "$address:${eventInfoConnectionEpochs[address] ?: 0L}"
             if (offset == 0) {
-                val payload = try {
-                    BarnardEventInfoCodec.payloadIfServing(
-                        eventInfoServePolicy,
-                        eventCode,
-                        eventInfoDisplayName,
-                        getEventCodeHash(),
-                    )
-                } catch (_: IllegalArgumentException) {
-                    null
-                }
-                if (payload == null) {
+                if (offsetZeroValue == null) {
                     return@synchronized Outcome(BluetoothGatt.GATT_READ_NOT_PERMITTED, null)
                 }
-                eventInfoSnapshots[key] = EventInfoSnapshot(payload, now)
+                eventInfoSnapshots[key] = EventInfoSnapshot(offsetZeroValue, now)
             }
             val snapshot = eventInfoSnapshots[key]
             if (snapshot == null) {

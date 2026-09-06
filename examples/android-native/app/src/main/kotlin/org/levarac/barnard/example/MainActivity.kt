@@ -114,6 +114,12 @@ class MainActivity : AppCompatActivity() {
                 append("event_info_envelope_v2: receiverState=${envelope.receiverState} " +
                     "bytes=${envelope.rawContainer.size}")
             }
+            is BarnardEvent.RelayDecision -> {
+                // Spec 134 density control. The digest is a local dedup key, not
+                // an identifier of a person or a device.
+                val relay = event.relay
+                append("relay_decision: ${relay.decision} hop=${relay.hop} reason=${relay.reason}")
+            }
         }
     }
 
