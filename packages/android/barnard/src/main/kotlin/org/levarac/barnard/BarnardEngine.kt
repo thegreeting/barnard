@@ -840,6 +840,71 @@ public class BarnardEngine(private val appContext: Context) {
     }
 
     /**
+     * The B005 event-info read path with the Bluetooth plumbing removed:
+     * everything `onCharacteristicRead` does with the characteristic value,
+     * minus tearing the connection down. [BluetoothGatt] cannot be constructed
+     * in a unit test, so this is the seam the tests drive.
+     *
+     * A container whose first byte is [BarnardB005EnvelopeV2.FORMAT_VERSION]
+     * (0x03) is a spec 122 v2 signed envelope and is verified in the SDK: hosts
+     * have no GATT access of their own, so leaving the verify call to them
+     * would make the verifier unreachable from the radio path. Everything else
+     * stays on the unchanged v1 hint path.
+     */
+    internal fun processEventInfoValue(
+        address: String,
+        value: ByteArray,
+        b004EventCodeHash: ByteArray,
+        currentEnin: Long,
+    ) {
+        if (value.isNotEmpty() && value[0].toInt() == BarnardB005EnvelopeV2.FORMAT_VERSION) {
+            processEventInfoEnvelopeV2(address, value, currentEnin)
+            return
+        }
+
+        try {
+            val hint = BarnardEventInfoCodec.parse(value)
+            if (!BarnardEventInfoCodec.matchesB004(hint, b004EventCodeHash)) {
+                eventInfoRetryBudget.recordSemanticUnavailable(address)
+                emitDebug("info", "gatt_event_info_unavailable", mapOf("address" to address, "reason" to "b004_mismatch"))
+                return
+            }
+            emitDebug("info", "gatt_event_info_hint", mapOf(
+                "address" to address,
+                "eventCodeHash" to hint.eventCodeHash.toHex(),
+            ) + if (isDebugBuild()) mapOf("displayName" to hint.eventDisplayName) else emptyMap())
+            eventInfoRetryBudget.recordSuccessfulAttempt(address, System.currentTimeMillis())
+            emitEventInfoHint(address, hint)
+        } catch (_: IllegalArgumentException) {
+            eventInfoRetryBudget.recordSemanticUnavailable(address)
+            emitDebug("info", "gatt_event_info_unavailable", mapOf("address" to address))
+        }
+    }
+
+    private fun processEventInfoEnvelopeV2(address: String, container: ByteArray, currentEnin: Long) {
+        val verified = BarnardB005EnvelopeV2.verify(container, currentEnin)
+        val receipt = verified?.let { BarnardB005EnvelopeV2Receipt.RadioSelfVerified(it) }
+            ?: BarnardB005EnvelopeV2Receipt.Unverified
+
+        // A container came back, so the GATT exchange succeeded. Verification
+        // failure is not radio unavailability: recording it as semantically
+        // unavailable would stop re-reading a peer whose envelope becomes valid
+        // in a later ENIN.
+        eventInfoRetryBudget.recordSuccessfulAttempt(address, System.currentTimeMillis())
+        emitDebug("info", "gatt_event_info_envelope_v2", mapOf(
+            "address" to address,
+            "bytes" to container.size,
+            "receiverState" to receipt.receiverState.name,
+        ))
+        val event = BarnardEventInfoEnvelopeV2Event(
+            peripheralId = address,
+            receipt = receipt,
+            rawContainer = container,
+        )
+        mainHandler.post { onEvent?.invoke(BarnardEvent.EventInfoEnvelopeV2(event)) }
+    }
+
+    /**
      * Emit v2 detection event. Byte-valued fields are lowercase hex.
      */
     private fun emitDetection(
@@ -1504,24 +1569,12 @@ public class BarnardEngine(private val appContext: Context) {
 
             when (uuid) {
                 eventInfoCharUuid -> {
-                    try {
-                        val hint = BarnardEventInfoCodec.parse(value)
-                        if (!BarnardEventInfoCodec.matchesB004(hint, peripheralReadValues[address]?.eventCodeHash ?: ByteArray(0))) {
-                            eventInfoRetryBudget.recordSemanticUnavailable(address)
-                            emitDebug("info", "gatt_event_info_unavailable", mapOf("address" to address, "reason" to "b004_mismatch"))
-                            finishConnection(gatt)
-                            return
-                        }
-                        emitDebug("info", "gatt_event_info_hint", mapOf(
-                            "address" to address,
-                            "eventCodeHash" to hint.eventCodeHash.toHex(),
-                        ) + if (isDebugBuild()) mapOf("displayName" to hint.eventDisplayName) else emptyMap())
-                        eventInfoRetryBudget.recordSuccessfulAttempt(address, System.currentTimeMillis())
-                        emitEventInfoHint(address, hint)
-                    } catch (_: IllegalArgumentException) {
-                        eventInfoRetryBudget.recordSemanticUnavailable(address)
-                        emitDebug("info", "gatt_event_info_unavailable", mapOf("address" to address))
-                    }
+                    processEventInfoValue(
+                        address = address,
+                        value = value,
+                        b004EventCodeHash = peripheralReadValues[address]?.eventCodeHash ?: ByteArray(0),
+                        currentEnin = currentEnin().toLong(),
+                    )
                     finishConnection(gatt)
                 }
                 eventCodeHashCharUuid -> {
