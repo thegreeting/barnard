@@ -412,8 +412,8 @@ public class BarnardEngine(private val appContext: Context) {
             emitDebug("info", "own_envelope_v2", mapOf("supplied" to false))
             return
         }
-        validateOwnEnvelopeV2Container(container)
         val copy = container.copyOf()
+        validateOwnEnvelopeV2Container(copy)
         // This device now has an own value, so it can no longer put a relayed
         // container on the wire. Drop any lease here rather than at the next
         // advanceParticipantRelay, so isRelayServing never claims a broadcast

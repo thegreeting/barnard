@@ -54,6 +54,21 @@ class BarnardEngineOwnEnvelopeV2Test {
         assertEquals("the device's own value is a hop-zero source", 0, served[1].toInt())
     }
 
+    @Test
+    fun mutatingTheCallersArrayAfterConfigureDoesNotAffectServedBytes() {
+        val container = vectorContainer()
+        val original = container.copyOf()
+        val engine = newEngine()
+
+        engine.configureOwnEventInfoEnvelopeV2(container)
+        container.fill(0xFF.toByte())
+
+        assertArrayEquals("stored copy must be unaffected by caller mutation", original, engine.ownEventInfoEnvelopeV2)
+        val served = engine.eventInfoValueForRead()
+        assertNotNull(served)
+        assertArrayEquals("served bytes must be unaffected by caller mutation", original, served)
+    }
+
     // --- 2. The structural gate ---
 
     @Test
