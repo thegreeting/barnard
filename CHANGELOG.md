@@ -62,3 +62,14 @@ driver draws the drafted summary from (see `RELEASING.md`).
   `specs/122-b005-v2-signed-envelope/DESIGN-NOTES.md` §0.2c. (barnard#187)
 - An envelope observed at the hop limit is never re-broadcast, and v1
   `eventInfoHint` traffic never reaches the relay. (barnard#187)
+- A device with its own event-info value to serve does not relay at all: it
+  neither feeds the relay nor holds a lease, so `isRelayServing` and the
+  decision events always describe what a peer reading B005 would actually get.
+  (barnard#187)
+- Relay lease decisions run in `advanceParticipantRelay()`, not on arrival of
+  an observation. Spec 134 decides at 30-second boundaries, and deciding on
+  arrival would fix each epoch's decision to the density seen at that epoch's
+  first arrival, defeating suppression. (barnard#187)
+- Overflow-marker expiry (barnard#181) is untouched by this change: the
+  33rd handle in a density window still saturates without being retained, and
+  the relay driving inherits whatever #181 settles. (barnard#187)
