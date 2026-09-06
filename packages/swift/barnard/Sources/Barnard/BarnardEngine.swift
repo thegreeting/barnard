@@ -1297,10 +1297,12 @@ public final class BarnardEngine: NSObject {
     )
     let receipt: BarnardB005EnvelopeV2Receipt = verified.map { .radioSelfVerified($0) } ?? .unverified
 
-    // A container came back, so the GATT exchange succeeded. Verification
-    // failure is not radio unavailability: recording it as semantically
-    // unavailable would stop re-reading a peer whose envelope becomes valid
-    // in a later ENIN.
+    // A container came back, so the GATT exchange succeeded, and this consumes
+    // one of the peer's two session attempts exactly as a valid v1 hint does.
+    // Verification failure is not radio unavailability: marking the peer
+    // semantically unavailable would bar every further read of it for the rest
+    // of the discovery session, including one whose envelope becomes valid in a
+    // later ENIN.
     eventInfoRetryBudget.recordSuccessfulAttempt(id, now: Date().timeIntervalSince1970)
     emitDebug(level: "info", name: "gatt_event_info_envelope_v2", data: [
       "id": id.uuidString,

@@ -220,7 +220,7 @@ of the codec can start now and is not blocked on the answer.
 
 ## 0.2b Where the verify call happens, and who owns each receiver state
 
-*Recorded when the engine receive path landed (barnard#186, released in 0.8.0).*
+*Recorded when the engine receive path landed (barnard#186, ships in 0.8.0).*
 
 Until 0.8.0 the verifier was unreachable from the radio path: `BarnardB005EnvelopeV2.verify`
 existed and was tested, but `BarnardEngine` only ever parsed a B005 read as a v1 hint. A host
@@ -251,9 +251,10 @@ pinned block (§0.2 and spec 122's "Receiver policy"). `BarnardB005EnvelopeV2.re
 stays a pure comparison and still never changes a state.
 
 **Retry-budget treatment.** A read that returned a container is a successful GATT attempt, whatever
-the verification outcome. Verification failure is not radio unavailability, and recording it as
-semantically unavailable would stop the engine re-reading a peer whose envelope becomes valid in a
-later ENIN.
+the verification outcome, and it consumes one of that peer's two session attempts exactly as a
+valid v1 hint does. Verification failure is not radio unavailability: marking the peer semantically
+unavailable would instead bar every further read of it for the rest of the discovery session,
+including one whose envelope becomes valid in a later ENIN.
 
 **Testability.** Neither `CBPeripheral` nor `BluetoothGatt` can be constructed in a unit test, so
 the characteristic-read handling was lifted into an internal `processEventInfoValue` on both
@@ -261,7 +262,7 @@ engines; the platform callback reduces to that call plus connection teardown. It
 ENIN as a parameter, which the tests need anyway: the vendored conformance envelopes sit at ENIN
 ~6.0e6 and no wall clock reachable by CI produces one.
 
-Driving the participant relay from these receipts is separate work (barnard#187, P6 below); this
+Driving the participant relay from these receipts is separate work, tracked in barnard#187; this
 boundary only delivers them.
 
 ---

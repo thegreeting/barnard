@@ -886,10 +886,12 @@ public class BarnardEngine(private val appContext: Context) {
         val receipt = verified?.let { BarnardB005EnvelopeV2Receipt.RadioSelfVerified(it) }
             ?: BarnardB005EnvelopeV2Receipt.Unverified
 
-        // A container came back, so the GATT exchange succeeded. Verification
-        // failure is not radio unavailability: recording it as semantically
-        // unavailable would stop re-reading a peer whose envelope becomes valid
-        // in a later ENIN.
+        // A container came back, so the GATT exchange succeeded, and this consumes
+        // one of the peer's two session attempts exactly as a valid v1 hint does.
+        // Verification failure is not radio unavailability: marking the peer
+        // semantically unavailable would bar every further read of it for the rest
+        // of the discovery session, including one whose envelope becomes valid in
+        // a later ENIN.
         eventInfoRetryBudget.recordSuccessfulAttempt(address, System.currentTimeMillis())
         emitDebug("info", "gatt_event_info_envelope_v2", mapOf(
             "address" to address,
