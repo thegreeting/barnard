@@ -127,6 +127,54 @@ public struct BarnardEventInfoHintEvent {
   public let additionalEventsOmitted: Bool
 }
 
+/// Outcome of running a B005 v2 container (spec 122) through
+/// `BarnardB005EnvelopeV2.verify` on the receive path.
+///
+/// Deliberately a two-case sum rather than a state field: `REGISTRY_VERIFIED`
+/// is unrepresentable here, so the SDK cannot assign it even by mistake. That
+/// tier is the host's to assign, and only after the host has performed an
+/// authenticated registry read (spec 122, "Receiver policy").
+public enum BarnardB005EnvelopeV2Receipt {
+  /// Steps 1-7 passed: the signature verifies and `eventId` is self-consistent
+  /// with the key set carried in the envelope. Registration is NOT confirmed,
+  /// and this MUST NOT be presented to a user as "verified" or "registered".
+  case radioSelfVerified(BarnardB005VerifiedEnvelope)
+  /// Verification did not succeed. The SDK reports *that* it failed, not *why*:
+  /// `verify` returns nothing for a malformed container and for a container
+  /// whose signature does not check out, and the two are not distinguished.
+  case unverified
+
+  public var receiverState: BarnardB005ReceiverState {
+    switch self {
+    case .radioSelfVerified: return .RADIO_SELF_VERIFIED
+    case .unverified: return .UNVERIFIED
+    }
+  }
+
+  public var verifiedEnvelope: BarnardB005VerifiedEnvelope? {
+    switch self {
+    case .radioSelfVerified(let envelope): return envelope
+    case .unverified: return nil
+    }
+  }
+}
+
+/// A B005 v2 signed envelope read from a peer's event-info characteristic.
+///
+/// Emitted for every container whose `formatVersion` is
+/// `BarnardB005EnvelopeV2.formatVersion` (0x03), verified or not: a failed
+/// envelope is surfaced to the host rather than silently dropped.
+public struct BarnardEventInfoEnvelopeV2Event {
+  public let peripheralId: UUID
+  public let receipt: BarnardB005EnvelopeV2Receipt
+  /// The container exactly as it came off the wire. Spec 134 re-broadcast
+  /// copies the signature byte for byte, so this is never re-encoded.
+  public let rawContainer: Data
+
+  public var receiverState: BarnardB005ReceiverState { receipt.receiverState }
+  public var verifiedEnvelope: BarnardB005VerifiedEnvelope? { receipt.verifiedEnvelope }
+}
+
 public enum BarnardEvent {
   case state(BarnardState)
   case constraint(BarnardConstraintEvent)
@@ -134,6 +182,7 @@ public enum BarnardEvent {
   case detection(BarnardDetectionEvent)
   case rssiUpdate(BarnardRssiUpdateEvent)
   case eventInfoHint(BarnardEventInfoHintEvent)
+  case eventInfoEnvelopeV2(BarnardEventInfoEnvelopeV2Event)
 }
 
 public struct BarnardDebugEvent {
@@ -1196,6 +1245,77 @@ public final class BarnardEngine: NSObject {
     )))
   }
 
+  /// The B005 event-info read path with the CoreBluetooth plumbing removed:
+  /// everything the `didUpdateValueFor` delegate does with the characteristic
+  /// value, minus tearing the connection down. `CBPeripheral` cannot be
+  /// constructed in a unit test, so this is the seam the tests drive.
+  ///
+  /// A container whose first byte is `BarnardB005EnvelopeV2.formatVersion`
+  /// (0x03) is a spec 122 v2 signed envelope and is verified in the SDK: hosts
+  /// have no GATT access of their own, so leaving the verify call to them
+  /// would make the verifier unreachable from the radio path. Everything else
+  /// stays on the unchanged v1 hint path.
+  internal func processEventInfoValue(
+    peripheralId id: UUID,
+    value: Data,
+    b004EventCodeHash: Data,
+    currentEnin: Int64
+  ) {
+    if value.first == BarnardB005EnvelopeV2.formatVersion {
+      processEventInfoEnvelopeV2(peripheralId: id, container: value, currentEnin: currentEnin)
+      return
+    }
+
+    do {
+      let hint = try BarnardEventInfoCodec.parse(value)
+      guard BarnardEventInfoCodec.matchesB004(hint, b004EventCodeHash: b004EventCodeHash) else {
+        eventInfoRetryBudget.recordSemanticUnavailable(id)
+        emitDebug(level: "info", name: "gatt_event_info_unavailable", data: ["id": id.uuidString, "reason": "b004_mismatch"])
+        return
+      }
+      var data: [String: Any] = [
+        "id": id.uuidString,
+        "eventCodeHash": hint.eventCodeHash.hexString,
+      ]
+      #if DEBUG
+      data["displayName"] = hint.eventDisplayName
+      #endif
+      emitDebug(level: "info", name: "gatt_event_info_hint", data: data)
+      eventInfoRetryBudget.recordSuccessfulAttempt(id, now: Date().timeIntervalSince1970)
+      emitEventInfoHint(peripheralId: id, eventInfo: hint)
+    } catch {
+      eventInfoRetryBudget.recordSemanticUnavailable(id)
+      emitDebug(level: "info", name: "gatt_event_info_unavailable", data: ["id": id.uuidString])
+    }
+  }
+
+  private func processEventInfoEnvelopeV2(peripheralId id: UUID, container: Data, currentEnin: Int64) {
+    let verified = BarnardB005EnvelopeV2.verify(
+      container: [UInt8](container),
+      currentEnin: currentEnin,
+      nameValidator: BarnardB005NativeDisplayNameNormalizer()
+    )
+    let receipt: BarnardB005EnvelopeV2Receipt = verified.map { .radioSelfVerified($0) } ?? .unverified
+
+    // A container came back, so the GATT exchange succeeded, and this consumes
+    // one of the peer's two session attempts exactly as a valid v1 hint does.
+    // Verification failure is not radio unavailability: marking the peer
+    // semantically unavailable would bar every further read of it for the rest
+    // of the discovery session, including one whose envelope becomes valid in a
+    // later ENIN.
+    eventInfoRetryBudget.recordSuccessfulAttempt(id, now: Date().timeIntervalSince1970)
+    emitDebug(level: "info", name: "gatt_event_info_envelope_v2", data: [
+      "id": id.uuidString,
+      "bytes": container.count,
+      "receiverState": String(describing: receipt.receiverState),
+    ])
+    onEvent?(.eventInfoEnvelopeV2(BarnardEventInfoEnvelopeV2Event(
+      peripheralId: id,
+      receipt: receipt,
+      rawContainer: container
+    )))
+  }
+
   /// Emit v2 detection event. Byte fields are lowercase hex.
   private func emitDetection(
     timestamp: Date,
@@ -1546,31 +1666,12 @@ extension BarnardEngine: CBPeripheralDelegate {
 
     switch characteristic.uuid {
     case eventInfoCharacteristicUUID:
-      do {
-        let hint = try BarnardEventInfoCodec.parse(value)
-        guard BarnardEventInfoCodec.matchesB004(
-          hint,
-          b004EventCodeHash: peripheralReadValues[id]?.eventCodeHash ?? Data()
-        ) else {
-          eventInfoRetryBudget.recordSemanticUnavailable(id)
-          emitDebug(level: "info", name: "gatt_event_info_unavailable", data: ["id": id.uuidString, "reason": "b004_mismatch"])
-          finishConnection(peripheral)
-          return
-        }
-        var data: [String: Any] = [
-          "id": id.uuidString,
-          "eventCodeHash": hint.eventCodeHash.hexString,
-        ]
-        #if DEBUG
-        data["displayName"] = hint.eventDisplayName
-        #endif
-        emitDebug(level: "info", name: "gatt_event_info_hint", data: data)
-        eventInfoRetryBudget.recordSuccessfulAttempt(id, now: Date().timeIntervalSince1970)
-        emitEventInfoHint(peripheralId: id, eventInfo: hint)
-      } catch {
-        eventInfoRetryBudget.recordSemanticUnavailable(id)
-        emitDebug(level: "info", name: "gatt_event_info_unavailable", data: ["id": id.uuidString])
-      }
+      processEventInfoValue(
+        peripheralId: id,
+        value: value,
+        b004EventCodeHash: peripheralReadValues[id]?.eventCodeHash ?? Data(),
+        currentEnin: Int64(currentEnin())
+      )
       finishConnection(peripheral)
     case eventCodeHashCharacteristicUUID:
       peripheralReadValues[id]?.eventCodeHash = value

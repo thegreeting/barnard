@@ -39,6 +39,11 @@ final class BarnardExampleModel: ObservableObject {
       append("constraint: \(constraint.code) \(constraint.message ?? "")")
     case .eventInfoHint(let hint):
       append("event_info_hint: name=\(hint.eventInfo.eventDisplayName) additionalNamesOmitted=\(hint.additionalNamesOmitted) additionalEventsOmitted=\(hint.additionalEventsOmitted)")
+    case .eventInfoEnvelopeV2(let envelope):
+      // Only the state and the size are logged. RADIO_SELF_VERIFIED means the
+      // signature checks out, not that the event is registered, so it must not
+      // be presented to a user as "verified".
+      append("event_info_envelope_v2: receiverState=\(envelope.receiverState) bytes=\(envelope.rawContainer.count)")
     }
   }
 

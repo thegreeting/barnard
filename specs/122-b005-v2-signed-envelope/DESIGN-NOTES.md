@@ -218,6 +218,59 @@ of the codec can start now and is not blocked on the answer.
 
 ---
 
+## 0.2b Where the verify call happens, and who owns each receiver state
+
+*Recorded when the engine receive path landed (barnard#186, ships in 0.8.0).*
+
+Until 0.8.0 the verifier was unreachable from the radio path: `BarnardB005EnvelopeV2.verify`
+existed and was tested, but `BarnardEngine` only ever parsed a B005 read as a v1 hint. A host
+cannot close that gap itself, because a host has no GATT access of its own and so never sees the
+container bytes.
+
+**The emission boundary.** The engine applies one test to the value it reads from the B005
+event-info characteristic: is the first byte `0x03`?
+
+If it is, the value is treated as a spec 122 v2 signed envelope. The engine calls `verify` itself,
+with its own current ENIN, and emits the new `eventInfoEnvelopeV2` / `EventInfoEnvelopeV2` event
+carrying the receipt, the raw container bytes, and the peer handle. The raw bytes are passed through
+unaltered because spec 134 re-broadcast has to preserve the signature byte for byte.
+
+Everything else — a `0x01` hint, an empty read, any other leading byte — continues down the
+unchanged v1 path, where `BarnardEventInfoCodec` decides what it is. That codec already rejects any
+payload whose version byte is not `0x01`, and it rejects a value too short to carry one, so the v2
+test is a one-way branch off the existing path rather than a second version table to keep in step
+with it. A rejected value is recorded as semantically unavailable exactly as before.
+
+Every `0x03` container is emitted, verified or not. A failed envelope reaches the host rather than
+being dropped, so a host can tell "no v2 peer" from "a v2 peer whose envelope did not check out".
+The SDK reports *that* verification failed and not *why*: `verify` returns nothing both for a
+malformed container and for a bad signature, and the two are deliberately not distinguished at this
+boundary.
+
+**Who owns each state.** The emitted receipt is a two-case sum — `radioSelfVerified(envelope)` or
+`unverified` — with `receiverState` derived from it. `REGISTRY_VERIFIED` is therefore not
+representable on anything the SDK emits, rather than merely never assigned. That tier belongs to
+the host and only after the host has itself performed an authenticated registry read against the
+pinned block (§0.2 and spec 122's "Receiver policy"). `BarnardB005EnvelopeV2.registryAgreement`
+stays a pure comparison and still never changes a state.
+
+**Retry-budget treatment.** A read that returned a container is a successful GATT attempt, whatever
+the verification outcome, and it consumes one of that peer's two session attempts exactly as a
+valid v1 hint does. Verification failure is not radio unavailability: marking the peer semantically
+unavailable would instead bar every further read of it for the rest of the discovery session,
+including one whose envelope becomes valid in a later ENIN.
+
+**Testability.** Neither `CBPeripheral` nor `BluetoothGatt` can be constructed in a unit test, so
+the characteristic-read handling was lifted into an internal `processEventInfoValue` on both
+engines; the platform callback reduces to that call plus connection teardown. It takes the current
+ENIN as a parameter, which the tests need anyway: the vendored conformance envelopes sit at ENIN
+~6.0e6 and no wall clock reachable by CI produces one.
+
+Driving the participant relay from these receipts is separate work, tracked in barnard#187; this
+boundary only delivers them.
+
+---
+
 ## (a) The #122 envelope v2 wire format and verification path
 
 ### a.1 Container (fixed by spec 134, restated for makers)

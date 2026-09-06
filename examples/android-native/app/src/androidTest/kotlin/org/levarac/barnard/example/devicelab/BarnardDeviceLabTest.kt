@@ -189,6 +189,11 @@ class BarnardScannerDeviceLabTest {
                             "additionalNamesOmitted=${event.hint.additionalNamesOmitted} " +
                             "additionalEventsOmitted=${event.hint.additionalEventsOmitted}",
                     )
+                    is BarnardEvent.EventInfoEnvelopeV2 -> marker(
+                        "BARNARD_EVT event_info_envelope_v2 " +
+                            "receiverState=${event.envelope.receiverState} " +
+                            "bytes=${event.envelope.rawContainer.size}",
+                    )
                 }
             }
         }

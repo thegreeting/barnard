@@ -156,6 +156,62 @@ public data class BarnardEventInfoHintEvent(
     val additionalEventsOmitted: Boolean,
 )
 
+/**
+ * Outcome of running a B005 v2 container (spec 122) through
+ * [BarnardB005EnvelopeV2.verify] on the receive path.
+ *
+ * Deliberately a two-case sum rather than a state field: `REGISTRY_VERIFIED`
+ * is unrepresentable here, so the SDK cannot assign it even by mistake. That
+ * tier is the host's to assign, and only after the host has performed an
+ * authenticated registry read (spec 122, "Receiver policy").
+ */
+public sealed class BarnardB005EnvelopeV2Receipt {
+    /**
+     * Steps 1-7 passed: the signature verifies and `eventId` is self-consistent
+     * with the key set carried in the envelope. Registration is NOT confirmed,
+     * and this MUST NOT be presented to a user as "verified" or "registered".
+     */
+    public data class RadioSelfVerified(
+        val envelope: BarnardB005VerifiedEnvelope,
+    ) : BarnardB005EnvelopeV2Receipt()
+
+    /**
+     * Verification did not succeed. The SDK reports *that* it failed, not *why*:
+     * `verify` returns nothing both for a malformed container and for one whose
+     * signature does not check out, and the two are not distinguished.
+     */
+    public object Unverified : BarnardB005EnvelopeV2Receipt()
+
+    public val receiverState: BarnardB005ReceiverState
+        get() = when (this) {
+            is RadioSelfVerified -> BarnardB005ReceiverState.RADIO_SELF_VERIFIED
+            is Unverified -> BarnardB005ReceiverState.UNVERIFIED
+        }
+
+    public val verifiedEnvelope: BarnardB005VerifiedEnvelope?
+        get() = (this as? RadioSelfVerified)?.envelope
+}
+
+/**
+ * A B005 v2 signed envelope read from a peer's event-info characteristic.
+ *
+ * Emitted for every container whose first byte is
+ * [BarnardB005EnvelopeV2.FORMAT_VERSION], verified or not: a failed envelope is
+ * surfaced to the host rather than silently dropped.
+ */
+public class BarnardEventInfoEnvelopeV2Event(
+    public val peripheralId: String,
+    public val receipt: BarnardB005EnvelopeV2Receipt,
+    /**
+     * The container exactly as it came off the wire. Spec 134 re-broadcast
+     * copies the signature byte for byte, so this is never re-encoded.
+     */
+    public val rawContainer: ByteArray,
+) {
+    public val receiverState: BarnardB005ReceiverState get() = receipt.receiverState
+    public val verifiedEnvelope: BarnardB005VerifiedEnvelope? get() = receipt.verifiedEnvelope
+}
+
 public sealed class BarnardEvent {
     public data class State(val state: BarnardState) : BarnardEvent()
     public data class Constraint(val constraint: BarnardConstraintEvent) : BarnardEvent()
@@ -163,6 +219,7 @@ public sealed class BarnardEvent {
     public data class Detection(val detection: BarnardDetectionEvent) : BarnardEvent()
     public data class RssiUpdate(val update: BarnardRssiUpdateEvent) : BarnardEvent()
     public data class EventInfoHint(val hint: BarnardEventInfoHintEvent) : BarnardEvent()
+    public data class EventInfoEnvelopeV2(val envelope: BarnardEventInfoEnvelopeV2Event) : BarnardEvent()
 }
 
 public data class BarnardDebugEvent(
