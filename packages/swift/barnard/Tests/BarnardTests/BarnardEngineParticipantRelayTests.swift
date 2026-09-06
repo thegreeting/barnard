@@ -145,11 +145,38 @@ final class BarnardEngineParticipantRelayTests: XCTestCase {
     XCTAssertEqual(broadcast.payloadDigest, BarnardCrypto.sha256(Data(envelope)))
   }
 
+  func testLeaseRenewalEmitsStopThenKeepForTheSameDigest() throws {
+    let h = harness()
+    feed(h, try vectorContainer(hop: 0), peer: 1)
+    finishContention(h)
+    let broadcast = try XCTUnwrap(decisions(h).last)
+    XCTAssertEqual(broadcast.decision, .broadcast)
+
+    // Run the 30-second lease out. The relay renews by ending the old lease
+    // and electing again, with r = 0 making pKeep = 1.
+    h.clock.now += 30_000
+    h.engine.advanceParticipantRelay()
+    h.clock.now += 15_001
+    h.engine.advanceParticipantRelay()
+
+    XCTAssertTrue(h.engine.isRelayServing)
+    let tail = Array(decisions(h).suffix(2))
+    XCTAssertEqual(tail.map(\.decision), [.stop, .keep])
+    XCTAssertEqual(tail[0].reason, "lease_ended")
+    XCTAssertEqual(tail[1].reason, "renewed")
+    XCTAssertEqual(tail[1].payloadDigest, broadcast.payloadDigest)
+    XCTAssertEqual(tail[1].hop, 1)
+  }
+
   // MARK: - 2. Hop at the limit is never re-broadcast
 
   func testHopAtLimitIsNeverRebroadcast() throws {
     let h = harness()
     feed(h, try vectorContainer(hop: 2), peer: 1)
+    // The container still verifies and still reaches the relay: spec 134 keeps
+    // a hop-two observation displayable. It is the relay's own hop guard, not
+    // a rejected receipt, that must stop the re-broadcast.
+    XCTAssertEqual(h.verifier.invocations, 1)
     finishContention(h)
 
     XCTAssertFalse(h.engine.isRelayServing)

@@ -157,12 +157,40 @@ class BarnardEngineParticipantRelayTest {
         assertArrayEquals(MessageDigest.getInstance("SHA-256").digest(envelope), broadcast.payloadDigest)
     }
 
+    @Test
+    fun leaseRenewalEmitsStopThenKeepForTheSameDigest() {
+        val h = harness()
+        feed(h, vectorContainer(0), 1)
+        finishContention(h)
+        val broadcast = decisions(h).last()
+        assertEquals(BarnardRelayDecision.BROADCAST, broadcast.decision)
+
+        // Run the 30-second lease out. The relay renews by ending the old
+        // lease and electing again, with r = 0 making pKeep = 1.
+        h.clock.now += 30_000
+        h.engine.advanceParticipantRelay()
+        h.clock.now += 15_001
+        h.engine.advanceParticipantRelay()
+
+        assertTrue(h.engine.isRelayServing)
+        val tail = decisions(h).takeLast(2)
+        assertEquals(listOf(BarnardRelayDecision.STOP, BarnardRelayDecision.KEEP), tail.map { it.decision })
+        assertEquals("lease_ended", tail[0].reason)
+        assertEquals("renewed", tail[1].reason)
+        assertArrayEquals(broadcast.payloadDigest, tail[1].payloadDigest)
+        assertEquals(1, tail[1].hop)
+    }
+
     // 2. Hop at the limit is never re-broadcast.
 
     @Test
     fun hopAtLimitIsNeverRebroadcast() {
         val h = harness()
         feed(h, vectorContainer(2), 1)
+        // The container still verifies and still reaches the relay: spec 134
+        // keeps a hop-two observation displayable. It is the relay's own hop
+        // guard, not a rejected receipt, that must stop the re-broadcast.
+        assertEquals(1, h.verifier.invocations)
         finishContention(h)
 
         assertFalse(h.engine.isRelayServing)
