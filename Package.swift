@@ -35,7 +35,10 @@ let libsecp256k1SwiftSettings: [SwiftSetting] = [.define("BARNARD_LIBSECP256K1")
 let package = Package(
     name: "Barnard",
     platforms: [
-        .iOS("14.0")
+        .iOS("14.0"),
+        // 10.15 is the floor the code needs: CBManager.authorization, used by
+        // the engine's Bluetooth permission check, is macOS 10.15+.
+        .macOS("10.15")
     ],
     products: [
         .library(name: "Barnard", targets: ["Barnard"]),
