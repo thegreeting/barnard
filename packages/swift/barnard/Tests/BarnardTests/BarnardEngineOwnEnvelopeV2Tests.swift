@@ -247,8 +247,11 @@ final class BarnardEngineOwnEnvelopeV2Tests: XCTestCase {
     XCTAssertFalse(engine.isRelayServing)
     XCTAssertNil(engine.relayContainerForServing())
     let stop = try XCTUnwrap(
-      events.compactMap { if case .relayDecision(let d) = $0 { return d } else { return nil } }
-        .last { $0.decision == .stop }
+      events.compactMap { (event: BarnardEvent) -> BarnardRelayDecisionEvent? in
+        if case .relayDecision(let d) = event { return d }
+        return nil
+      }
+      .last(where: { $0.decision == .stop })
     )
     XCTAssertEqual(stop.reason, "own_value_precedence")
   }

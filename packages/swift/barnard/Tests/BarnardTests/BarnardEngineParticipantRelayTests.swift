@@ -119,7 +119,10 @@ final class BarnardEngineParticipantRelayTests: XCTestCase {
   }
 
   private func decisions(_ h: Harness) -> [BarnardRelayDecisionEvent] {
-    h.events().compactMap { if case .relayDecision(let d) = $0 { return d } else { return nil } }
+    h.events().compactMap { (event: BarnardEvent) -> BarnardRelayDecisionEvent? in
+      if case .relayDecision(let d) = event { return d }
+      return nil
+    }
   }
 
   // MARK: - 1. A verified receipt drives the relay and is served unchanged
