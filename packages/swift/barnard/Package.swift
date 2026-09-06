@@ -35,9 +35,12 @@ let package = Package(
     name: "Barnard",
     platforms: [
         .iOS("14.0"),
-        // 10.15 is the floor the code needs: CBManager.authorization, used by
-        // the engine's Bluetooth permission check, is macOS 10.15+.
-        .macOS("10.15")
+        // 12.0 is the lowest macOS deployment target the current toolchain can
+        // build and availability-check; below it the compiler clamps upward
+        // rather than honouring the declaration. The sources themselves need
+        // nothing newer than CBManager.authorization (macOS 10.15+), which the
+        // engine's Bluetooth permission check uses.
+        .macOS("12.0")
     ],
     products: [
         .library(name: "Barnard", targets: ["Barnard"]),

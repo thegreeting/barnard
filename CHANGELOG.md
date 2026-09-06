@@ -34,7 +34,8 @@ driver draws the drafted summary from (see `RELEASING.md`).
 ### Added
 
 - **macOS is a supported platform.** Both Swift package manifests declare
-  `.macOS("10.15")` alongside `.iOS("14.0")`, and the whole package builds and
+  `.macOS("12.0")` alongside `.iOS("14.0")` — macOS 12 and later, the lowest
+  deployment target the current toolchain can build — and the whole package builds and
   tests natively on macOS. `BarnardEngine` runs as a real-radio Central and
   Peripheral there; the iOS-only foreground-return advertising restart is
   absent (macOS does not background-demote the advertised service UUID) and

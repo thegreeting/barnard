@@ -5,8 +5,11 @@ Barnard protocol without a Flutter runtime dependency (barnard#56).
 
 ## Platform support
 
-The package declares iOS 14 and macOS 10.15 (barnard#192). The macOS floor is set by
-`CBManager.authorization`, which the engine's Bluetooth permission check uses.
+The package declares iOS 14 and macOS 12 (barnard#192). The macOS floor is set by
+the toolchain, not by the sources: 12.0 is the lowest macOS deployment target
+the current Swift toolchain can build and availability-check. The code itself
+uses nothing newer than `CBManager.authorization` (macOS 10.15+), which the
+engine's Bluetooth permission check uses.
 
 macOS is a full real-radio platform: `BarnardEngine` scans as a Central and
 advertises as a Peripheral over CoreBluetooth exactly as it does on iOS, and

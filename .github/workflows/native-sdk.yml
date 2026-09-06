@@ -74,15 +74,17 @@ jobs:
         # only (none present in Sources/Tests here; `precondition()` is
         # unaffected), so numeric-correctness test behavior is unchanged.
         run: xcodebuild -scheme Barnard-Package -destination "id=${{ steps.destination.outputs.udid }}" SWIFT_OPTIMIZATION_LEVEL=-O test
-      - name: swift build + swift test (native macOS, whole package)
+      - name: swift test (native macOS, whole package)
         # barnard#192: the package also supports macOS, where the whole graph
         # (including the Barnard target's CoreBluetooth code) builds and tests
-        # natively with no simulator. -Xswiftc -O for the same reason the
+        # natively with no simulator. swift test builds what it runs, so no
+        # separate swift build is needed. -Xswiftc -O for the same reason the
         # xcodebuild step above passes SWIFT_OPTIMIZATION_LEVEL=-O: the default
         # -Onone build makes the BigInteger-based secp256k1 EC math ~9x slower.
-        run: |
-          swift build
-          swift test -Xswiftc -O
+        # Runs in the job's working-directory packages/swift/barnard, i.e. the
+        # inner package graph; the root package resolves to the same 23 suites
+        # and the repo-root test vectors are reachable from either.
+        run: swift test -Xswiftc -O
       - name: Root and inner Swift package manifest drift guard
         working-directory: .
         run: ./scripts/check-swift-package-manifest-mirror.sh
