@@ -48,9 +48,11 @@ driver draws the drafted summary from (see `RELEASING.md`).
   line plus plain `BARNARD_MACHOST_*` markers on stdout, and exits with a code
   the device-lab orchestrator can judge: 0 when the expected number of distinct
   peers is found, 2 when the radio worked but the rendezvous did not happen, 3
-  when Bluetooth is unavailable or ungranted. The example is not part of the
-  published SDK; CI builds it but cannot run it, because GitHub's macOS runners
-  have no Bluetooth radio.
+  when Bluetooth is unavailable or ungranted. It builds with SwiftPM alone and
+  bundles itself into a `.app`, because the lab host has a Swift toolchain but
+  no XcodeGen and no Homebrew. The example is not part of the published SDK;
+  CI builds it but cannot run it, because GitHub's macOS runners have no
+  Bluetooth radio.
 - The engine verifies B005 v2 signed envelopes on the receive path (spec 122).
   A container whose `formatVersion` is `0x03` is passed to
   `BarnardB005EnvelopeV2.verify` with the engine's current ENIN, and the result

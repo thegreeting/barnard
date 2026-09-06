@@ -174,16 +174,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode.app
-      - name: Install XcodeGen
-        run: brew install xcodegen
-      - name: Check lab runner launch script syntax
-        run: bash -n scripts/run.sh
-      - name: Generate Xcode project
-        run: xcodegen generate
-      - name: Build headless macOS lab runner
+      - name: Check lab runner script syntax
         run: |
-          xcodebuild -project BarnardLabRunner.xcodeproj -scheme BarnardLabRunner \
-            -destination "platform=macOS" build
+          bash -n scripts/bundle.sh
+          bash -n scripts/run.sh
+      - name: Build headless macOS lab runner
+        # SwiftPM only: the lab host has a Swift toolchain but no XcodeGen and
+        # no Homebrew, so the runner must build without either.
+        run: swift build
 
   android-library:
     # Flutter-free: builds/tests packages/android/barnard directly. No

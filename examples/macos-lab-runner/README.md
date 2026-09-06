@@ -10,19 +10,25 @@ It is not a demo of the SDK. For that, see [`examples/ios-native`](../ios-native
 
 ## Build and run
 
+Requires macOS 12 or newer and a Swift toolchain. Nothing else: no XcodeGen, no
+Homebrew, no Xcode project.
+
 ```sh
-brew install xcodegen
 ./scripts/run.sh --event-code BND --role auto --timeout 120
 ```
 
-`run.sh` generates the Xcode project, builds it, and execs the built binary
-directly out of `BarnardLabRunner.app/Contents/MacOS/`. Build output goes to
-stderr and to `build/build.log`, never to stdout, so the orchestrator's stdout
+`run.sh` calls `scripts/bundle.sh`, which runs `swift build -c release`,
+assembles `build/LabRunner.app` around the binary, writes its `Info.plist`, and
+codesigns it. It then execs the binary out of `LabRunner.app/Contents/MacOS/`.
+Build output goes to stderr, never to stdout, so the orchestrator's stdout
 stays clean.
 
-Set `SKIP_BUILD=1` to launch an already-built app. The lab host should build
-once and then run many times that way, both for speed and because a rebuild
-invalidates the Bluetooth grant (see below).
+`--build-only` bundles and stops. `SKIP_BUILD=1` launches an already-bundled
+app.
+
+The `.app` wrapper is what gives the process a bundle identity, which is what
+macOS attaches the Bluetooth grant to. A bare executable would be treated as a
+different, unnamed thing on every run.
 
 ## Arguments
 
@@ -80,18 +86,24 @@ one-time prompt. Nothing here can answer that prompt, and nothing tries to.
    headless, so a prompt can actually be displayed.
 2. Run `./scripts/run.sh --timeout 30` once and approve the prompt.
 3. Afterwards the grant lives under System Settings, Privacy & Security,
-   Bluetooth, listed as `BarnardLabRunner`.
+   Bluetooth, listed as `LabRunner`.
 
-macOS keys that grant to the app's code signature. The project signs ad-hoc by
-default so it builds anywhere, including CI with no keychain, but an ad-hoc
-signature changes on every rebuild, which drops the grant and re-prompts. Two
-ways around it on a lab host, either is fine:
+macOS keys that grant to the app's code signature, not just to its bundle id.
+`bundle.sh` signs ad-hoc by default so the runner builds anywhere, including CI
+with no keychain, but an ad-hoc signature changes on every rebuild, which drops
+the grant and re-prompts. Set `CODESIGN_IDENTITY` to a stable identity and the
+grant survives rebuilds:
 
-- Build once and run with `SKIP_BUILD=1` from then on.
-- Sign with a stable identity: `CODE_SIGN_IDENTITY="Apple Development: ..." ./scripts/run.sh`.
+```sh
+CODESIGN_IDENTITY="Apple Development: ..." ./scripts/run.sh
+```
 
-The app has no entitlements file and is therefore not sandboxed; a sandboxed
-build would additionally need `com.apple.security.device.bluetooth`.
+The orchestrator passes `CODESIGN_IDENTITY`. Building once and then running
+with `SKIP_BUILD=1` also keeps an ad-hoc grant alive, since nothing is
+re-signed.
+
+The app has no entitlements and is therefore not sandboxed; a sandboxed build
+would additionally need `com.apple.security.device.bluetooth`.
 
 ## The relay verifier is lab-only
 
@@ -104,6 +116,6 @@ product.
 
 ## CI
 
-The `macos-lab-runner-example` job in `.github/workflows/native-sdk.yml` builds
-this target on every change. It is build only: GitHub's macOS runners have no
-Bluetooth radio, so nothing here is executed there.
+The `macos-lab-runner-example` job in `.github/workflows/native-sdk.yml` runs
+`swift build` here on every change. It is build only: GitHub's macOS runners
+have no Bluetooth radio, so nothing here is executed there.
