@@ -34,6 +34,13 @@ class BarnardEngineB005EnvelopeV2Test {
 
     private fun newContext(): Context = ApplicationProvider.getApplicationContext()
 
+    /**
+     * The handle handed to the seam. Named rather than written out at each
+     * call site so an assertion compares against the value the engine was
+     * actually given, not a second copy of the same literal.
+     */
+    private val seamAddress = "AA:BB:CC:DD:EE:FF"
+
     private fun collectEvents(
         value: ByteArray,
         b004EventCodeHash: ByteArray = ByteArray(0),
@@ -43,7 +50,7 @@ class BarnardEngineB005EnvelopeV2Test {
         val events = mutableListOf<BarnardEvent>()
         engine.onEvent = { events.add(it) }
         engine.processEventInfoValue(
-            address = "AA:BB:CC:DD:EE:FF",
+            address = seamAddress,
             value = value,
             b004EventCodeHash = b004EventCodeHash,
             currentEnin = currentEnin,
@@ -75,6 +82,9 @@ class BarnardEngineB005EnvelopeV2Test {
             // Raw bytes must survive unchanged: spec 134 re-broadcast copies the
             // signature byte for byte.
             assertArrayEquals(key, container, emitted.rawContainer)
+            // The event must name the peer it was read from: a host
+            // correlating a receipt with a peer has nothing else to key on.
+            assertEquals(key, seamAddress, emitted.peripheralId)
             assertFalse("$key: v1 hint must not be emitted for a v2 container", hasHint(events))
         }
     }
@@ -93,6 +103,9 @@ class BarnardEngineB005EnvelopeV2Test {
         assertEquals(BarnardB005ReceiverState.UNVERIFIED, emitted.receiverState)
         assertNull(emitted.verifiedEnvelope)
         assertArrayEquals(container, emitted.rawContainer)
+        // A failed envelope must still name its peer, or a host cannot tell
+        // which peer to stop retrying.
+        assertEquals(seamAddress, emitted.peripheralId)
         assertFalse(hasHint(events))
     }
 

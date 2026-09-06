@@ -17,6 +17,11 @@ final class BarnardEngineB005EnvelopeV2Tests: XCTestCase {
   /// Inside the vectors' `[validFromEnin, relayExpiresAtEnin)` window.
   private let vectorEnin: Int64 = 6_000_000
 
+  /// The handle handed to the seam. Named rather than written out at each
+  /// call site so an assertion compares against the value the engine was
+  /// actually given, not a second copy of the same literal.
+  private let seamPeripheralId = UUID(uuidString: "00000000-0000-0000-0000-0000000000AA")!
+
   private func collectEvents(
     value: Data,
     b004EventCodeHash: Data = Data(),
@@ -26,7 +31,7 @@ final class BarnardEngineB005EnvelopeV2Tests: XCTestCase {
     var events: [BarnardEvent] = []
     engine.onEvent = { events.append($0) }
     engine.processEventInfoValue(
-      peripheralId: UUID(uuidString: "00000000-0000-0000-0000-0000000000AA")!,
+      peripheralId: seamPeripheralId,
       value: value,
       b004EventCodeHash: b004EventCodeHash,
       currentEnin: currentEnin
@@ -58,6 +63,9 @@ final class BarnardEngineB005EnvelopeV2Tests: XCTestCase {
       // Raw bytes must survive unchanged: spec 134 re-broadcast copies the
       // signature byte for byte.
       XCTAssertEqual(emitted.rawContainer, container, key)
+      // The event must name the peer it was read from: a host correlating a
+      // receipt with a peer has nothing else to key on.
+      XCTAssertEqual(emitted.peripheralId, seamPeripheralId, key)
       XCTAssertFalse(hasHint(events), "\(key): v1 hint must not be emitted for a v2 container")
     }
   }
@@ -74,6 +82,9 @@ final class BarnardEngineB005EnvelopeV2Tests: XCTestCase {
     XCTAssertEqual(emitted.receiverState, .UNVERIFIED)
     XCTAssertNil(emitted.verifiedEnvelope)
     XCTAssertEqual(emitted.rawContainer, container)
+    // A failed envelope must still name its peer, or a host cannot tell which
+    // peer to stop retrying.
+    XCTAssertEqual(emitted.peripheralId, seamPeripheralId)
     XCTAssertFalse(hasHint(events))
   }
 
