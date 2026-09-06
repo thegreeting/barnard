@@ -825,6 +825,13 @@ public class BarnardEngine(private val appContext: Context) {
 
     public fun leaveEvent() {
         resetPeerDiscoveryState("leave_event")
+        // A supplied v2 container commits to one event. Leaving is the single
+        // call that unambiguously says this device is no longer part of it, so
+        // the container goes with it rather than staying on the air under a
+        // signature for an event the device has left. Joining and reconfiguring
+        // do not clear it: neither says the previous event ended, and a host
+        // that provisions a container before joining would lose it.
+        synchronized(eventInfoStateLock) { ownEnvelopeV2Container = null }
         eventCode = null
         prefs.edit().remove("eventCode").apply()
 

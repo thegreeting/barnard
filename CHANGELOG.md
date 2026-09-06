@@ -100,8 +100,8 @@ driver draws the drafted summary from (see `RELEASING.md`).
   not gated on
   `configureEventInfoServing`, and stopping Advertise does not clear it —
   unlike the relay lease, it is host state the engine was handed rather than
-  engine-elected state spec 134 requires be rechecked on resume. Nor do
-  `leaveEvent`, `joinEvent`, or `configure` clear it: the host owns the
-  container's whole lifetime and must clear it when the event ends.
-  Documented in
+  engine-elected state spec 134 requires be rechecked on resume. `leaveEvent`
+  does clear it, since a container is signed for one event and leaving is the
+  one call that says this device has left it; `joinEvent` and
+  `configureEventInfoServing` leave it in place. Documented in
   `specs/122-b005-v2-signed-envelope/DESIGN-NOTES.md` §0.2d. (barnard#189)

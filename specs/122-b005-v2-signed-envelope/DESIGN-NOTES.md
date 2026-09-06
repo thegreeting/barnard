@@ -485,15 +485,17 @@ is an organizer-designated source. A signed container answers that question by i
 contents, and supplying it is itself the decision. Requiring both would let a host hold a valid
 signed envelope and silently serve nothing.
 
-**Nothing else clears it either, and that is the open risk.** `leaveEvent`, `joinEvent` and
-`configure` all leave a supplied container in place, so a device that leaves an event keeps
-serving the previous organiser's signed envelope until the host clears it. The engine cannot
-decide this for the host: the container commits to an `eventId` the engine does not track, and
-guessing wrong either drops a valid configuration or serves a stale one. The rule is therefore
-that the host owns the container's whole lifetime — supply it when the event starts, clear it
-when the event ends. Worth revisiting if a consumer trips over it; the cheap fix would be
-clearing on `leaveEvent` only, which is the one call that unambiguously says "this device is no
-longer part of that event".
+**`leaveEvent` clears it; `joinEvent` and `configure` do not.** *(Lead ruling, 2026-09-06,
+settling what an earlier draft of this section left as an open risk.)* A supplied container is
+signed for one event, and leaving is the single call that unambiguously says this device is no
+longer part of it. Left in place, the container would keep an authority-signed statement about
+a departed event on the air, which is the one outcome none of the alternatives are worth.
+
+The other two calls are deliberately excluded. Provisioning a container before joining is a
+normal order of operations, so clearing on `joinEvent` would discard a valid configuration for
+no gain. `configureEventInfoServing` adjusts the unsigned v1 policy and says nothing about the
+event having ended. The engine still does not inspect the container's `eventId` — it does not
+track one to compare against — so this is a lifecycle rule, not a content check.
 
 **Stopping Advertise does not clear it.** This is a deliberate asymmetry with the relay lease,
 which `stopAdvertise` tears down. The lease is engine-elected state, and spec 134 requires a

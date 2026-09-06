@@ -158,21 +158,41 @@ class BarnardEngineOwnEnvelopeV2Test {
     }
 
     @Test
-    fun leavingTheEventAlsoKeepsTheContainerUntilTheHostClearsIt() {
+    fun leavingTheEventClearsTheSuppliedContainer() {
         val container = vectorContainer()
         val engine = newEngine()
         engine.joinEvent("BARNARD-OWN-V2-TEST")
         engine.configureOwnEventInfoEnvelopeV2(container)
+        assertArrayEquals(container, engine.eventInfoValueForRead())
 
         engine.leaveEvent()
 
-        // Pinning the current rule rather than endorsing it: the host owns the
-        // container's whole lifetime, because the engine does not track the
-        // eventId the container commits to and cannot tell a stale one from a
-        // valid one. See DESIGN-NOTES 0.2d.
-        assertArrayEquals(container, engine.eventInfoValueForRead())
-        engine.configureOwnEventInfoEnvelopeV2(null)
+        // Leaving is the one call that says this device is no longer part of
+        // the event the container is signed for, so the container goes with it
+        // rather than staying on the air. See DESIGN-NOTES 0.2d.
+        assertNull(engine.ownEventInfoEnvelopeV2)
         assertNull(engine.eventInfoValueForRead())
+    }
+
+    @Test
+    fun joiningAndReconfiguringKeepTheSuppliedContainer() {
+        val container = vectorContainer()
+        val engine = newEngine()
+        engine.configureOwnEventInfoEnvelopeV2(container)
+
+        // Provisioning a container before joining is a normal order of
+        // operations, and reconfiguring says nothing about the event having
+        // ended, so neither call discards it. Only leaving does.
+        engine.joinEvent("BARNARD-OWN-V2-TEST")
+        assertArrayEquals(container, engine.ownEventInfoEnvelopeV2)
+        engine.configureEventInfoServing(
+            organizerDesignated = true,
+            eventActiveForDiscovery = true,
+            eventDisplayName = "Own Event",
+        )
+        assertArrayEquals(container, engine.eventInfoValueForRead())
+
+        engine.leaveEvent()
     }
 
     // --- 4. Precedence over a relayed container ---

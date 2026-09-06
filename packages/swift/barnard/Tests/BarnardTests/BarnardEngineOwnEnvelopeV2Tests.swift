@@ -122,22 +122,38 @@ final class BarnardEngineOwnEnvelopeV2Tests: XCTestCase {
     XCTAssertEqual(engine.eventInfoValueForRead(), container)
   }
 
-  func testLeavingTheEventAlsoKeepsTheContainerUntilTheHostClearsIt() throws {
+  func testLeavingTheEventClearsTheSuppliedContainer() throws {
     let container = try vectorContainer()
     let engine = BarnardEngine()
     defer { engine.leaveEvent() }
     engine.joinEvent("BARNARD-OWN-V2-TEST")
     try engine.configureOwnEventInfoEnvelopeV2(container: container)
+    XCTAssertEqual(engine.eventInfoValueForRead(), container)
 
     engine.leaveEvent()
 
-    // Pinning the current rule rather than endorsing it: the host owns the
-    // container's whole lifetime, because the engine does not track the
-    // eventId the container commits to and cannot tell a stale one from a
-    // valid one. See DESIGN-NOTES 0.2d.
-    XCTAssertEqual(engine.eventInfoValueForRead(), container)
-    try engine.configureOwnEventInfoEnvelopeV2(container: nil)
+    // Leaving is the one call that says this device is no longer part of the
+    // event the container is signed for, so the container goes with it rather
+    // than staying on the air. See DESIGN-NOTES 0.2d.
+    XCTAssertNil(engine.ownEventInfoEnvelopeV2)
     XCTAssertNil(engine.eventInfoValueForRead())
+  }
+
+  func testJoiningAndReconfiguringKeepTheSuppliedContainer() throws {
+    let container = try vectorContainer()
+    let engine = BarnardEngine()
+    defer { engine.leaveEvent() }
+    try engine.configureOwnEventInfoEnvelopeV2(container: container)
+
+    // Provisioning a container before joining is a normal order of operations,
+    // and reconfiguring says nothing about the event having ended, so neither
+    // call discards it. Only leaving does.
+    engine.joinEvent("BARNARD-OWN-V2-TEST")
+    XCTAssertEqual(engine.ownEventInfoEnvelopeV2, container)
+    try engine.configureEventInfoServing(
+      organizerDesignated: true, eventActiveForDiscovery: true, eventDisplayName: "Own Event"
+    )
+    XCTAssertEqual(engine.eventInfoValueForRead(), container)
   }
 
   // MARK: - 4. Precedence over a relayed container

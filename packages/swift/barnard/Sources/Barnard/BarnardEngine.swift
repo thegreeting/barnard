@@ -1027,6 +1027,13 @@ public final class BarnardEngine: NSObject {
 
   public func leaveEvent() {
     resetPeerDiscoveryState(reason: "leave_event")
+    // A supplied v2 container commits to one event. Leaving is the single call
+    // that unambiguously says this device is no longer part of it, so the
+    // container goes with it rather than staying on the air under a signature
+    // for an event the device has left. Joining and reconfiguring do not clear
+    // it: neither says the previous event ended, and a host that provisions a
+    // container before joining would lose it.
+    ownEnvelopeV2Container = nil
     rpid.leaveEvent()
     rebuildGattServiceIfNeeded()
     emitState(reasonCode: "leave_event")
