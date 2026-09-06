@@ -43,6 +43,14 @@ driver draws the drafted summary from (see `RELEASING.md`).
   wire format, or stored data changed. This entry is written under 0.8.0
   because that is the open section; it may ship in a later release, and the
   release driver will place it. (barnard#192)
+- **A headless macOS lab runner**, `examples/macos-lab-runner`. It hosts
+  `BarnardEngine` in a run loop with no window, prints every event as a JSON
+  line plus plain `BARNARD_MACHOST_*` markers on stdout, and exits with a code
+  the device-lab orchestrator can judge: 0 when the expected number of distinct
+  peers is found, 2 when the radio worked but the rendezvous did not happen, 3
+  when Bluetooth is unavailable or ungranted. The example is not part of the
+  published SDK; CI builds it but cannot run it, because GitHub's macOS runners
+  have no Bluetooth radio.
 - The engine verifies B005 v2 signed envelopes on the receive path (spec 122).
   A container whose `formatVersion` is `0x03` is passed to
   `BarnardB005EnvelopeV2.verify` with the engine's current ENIN, and the result

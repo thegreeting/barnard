@@ -1,0 +1,44 @@
+name: BarnardLabRunner
+options:
+  bundleIdPrefix: org.levarac.barnard
+  deploymentTarget:
+    macOS: "13.0"
+packages:
+  Barnard:
+    path: ../../packages/swift/barnard
+targets:
+  BarnardLabRunner:
+    type: application
+    platform: macOS
+    sources:
+      - BarnardLabRunner
+    dependencies:
+      - package: Barnard
+        product: Barnard
+      # The spec 134 relay verifier protocol lives in BarnardCore, so a host
+      # that supplies one links both products.
+      - package: Barnard
+        product: BarnardCore
+    info:
+      path: BarnardLabRunner/Info.plist
+      properties:
+        # No Dock icon and no menu bar: this is a headless process the
+        # device-lab orchestrator backgrounds and reads stdout from.
+        LSUIElement: true
+        NSBluetoothAlwaysUsageDescription: "Barnard uses Bluetooth to scan for and advertise to nearby devices running the Barnard protocol."
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.levarac.barnard.LabRunner
+        SWIFT_VERSION: "5.0"
+        # Ad-hoc by default so the example builds on any Mac and in CI with no
+        # keychain. The lab host may override CODE_SIGN_IDENTITY with a real
+        # Developer ID / Apple Development identity so the one-time Bluetooth
+        # grant survives rebuilds (see README, "Bluetooth permission").
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGNING_REQUIRED: YES
+        CODE_SIGNING_ALLOWED: YES
+        # No entitlements file on purpose: an App Sandbox app would need
+        # com.apple.security.device.bluetooth, and this is a lab tool, not a
+        # distributed app.
+        ENABLE_HARDENED_RUNTIME: NO

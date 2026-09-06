@@ -91,9 +91,11 @@ packages/
 ### Supporting directories
 
 - `examples/` contains `dart/barnard_demo`, `flutter/barnard_poc`,
-  `ios-native`, `android-native`, and `react-native/barnard_demo`. They keep
-  integration and platform setup observable without turning a production app
-  into a test fixture.
+  `ios-native`, `android-native`, `react-native/barnard_demo`, and
+  `macos-lab-runner`. They keep integration and platform setup observable
+  without turning a production app into a test fixture. `macos-lab-runner` is
+  the odd one out: a headless macOS host the device lab drives as a third real
+  radio, not a demo to read for API shape.
 - `schema/` contains versioned Barnard v1 and v2 JSON Schema definitions. It is
   separate from any package so Dart, Swift, Kotlin, and TypeScript consumers can
   share public shapes without sharing an implementation language.
