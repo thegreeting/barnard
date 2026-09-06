@@ -24,7 +24,9 @@ needed (GitHub Models, the original zero-config backend, was retired on
    Release for that tag using only `GITHUB_TOKEN`: PRs, resolved issues, and
    `specs/` changes since the previous version tag, plus the changelog link.
    This always succeeds on its own and is the factual source of truth.
-2. **Summary prose, drafted at release time.** Whoever drives the release —
+2. **Summary prose, drafted at release time.** `CHANGELOG.md` is the in-repo
+   record of what a consumer has to act on, breaking changes above all; read it
+   first and carry its entries into the summary. Whoever drives the release —
    in practice the maintainer's agent session that pushes the tag — drafts a
    short summary (Highlights, protocol changes, what's new; breaking changes
    called out prominently when present) on top of the generated facts and
