@@ -244,6 +244,33 @@ public class BarnardRelayDecisionEvent(
     public val reason: String,
 )
 
+/**
+ * Why a host-supplied own B005 v2 container was refused.
+ *
+ * The checks are structural only: the SDK never signs, re-encodes, or
+ * re-verifies what the host hands it, so a container that is well formed at
+ * this layer is served byte for byte even if its signature or its validity
+ * window would fail a peer's [BarnardB005EnvelopeV2.verify].
+ */
+public enum class BarnardOwnEnvelopeV2Error {
+    /** Outside `5..512` bytes. Four bytes of header plus a non-empty envelope. */
+    INVALID_CONTAINER_LENGTH,
+
+    /** Byte 0 is not [BarnardB005EnvelopeV2.FORMAT_VERSION] (`0x03`). */
+    UNSUPPORTED_FORMAT_VERSION,
+
+    /** Byte 1 is not zero. The device's own value is a hop-zero source. */
+    NON_ZERO_HOP_COUNT,
+
+    /** The big-endian length at bytes 2-3 disagrees with the byte count. */
+    ENVELOPE_LENGTH_MISMATCH,
+}
+
+/** Thrown by `BarnardEngine.configureOwnEventInfoEnvelopeV2`. */
+public class BarnardOwnEnvelopeV2Exception(
+    public val reason: BarnardOwnEnvelopeV2Error,
+) : IllegalArgumentException(reason.name)
+
 public sealed class BarnardEvent {
     public data class State(val state: BarnardState) : BarnardEvent()
     public data class Constraint(val constraint: BarnardConstraintEvent) : BarnardEvent()

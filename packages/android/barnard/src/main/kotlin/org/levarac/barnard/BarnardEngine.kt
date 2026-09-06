@@ -170,6 +170,14 @@ public class BarnardEngine(private val appContext: Context) {
     private var participantRelay: BarnardParticipantRelay? = null
     private var relayTickRunnable: Runnable? = null
     private var relayServedContainer: ByteArray? = null
+
+    /**
+     * A host-supplied, host-signed hop-zero v2 container (spec 122), served in
+     * place of the v1 payload while it is set. Guarded by [eventInfoStateLock]
+     * like the relayed container: the GATT server answers reads on one thread
+     * while the host configures on another.
+     */
+    private var ownEnvelopeV2Container: ByteArray? = null
     private var relayLastServedDigest: ByteArray? = null
     /**
      * Set around each relay call so the sink can name the cause of a start or
@@ -381,6 +389,71 @@ public class BarnardEngine(private val appContext: Context) {
     }
 
     /**
+     * Supplies the pre-encoded, pre-signed B005 v2 container (spec 122) this
+     * device serves as its own event-info value, or clears it when [container]
+     * is null.
+     *
+     * The host builds the container with [BarnardB005EnvelopeV2.encodeContainer]
+     * in either authority-direct or delegate mode. The SDK does not sign,
+     * re-encode, or re-verify it, and it never assigns `REGISTRY_VERIFIED`: it
+     * only checks that the bytes are a well-formed `0x03` container at hop zero
+     * and then serves them byte for byte.
+     *
+     * A supplied container is not gated on [configureEventInfoServing]. The v1
+     * payload needs that policy because it carries no signature of its own;
+     * supplying a signed container is itself the decision to serve.
+     *
+     * @throws BarnardOwnEnvelopeV2Exception when the bytes are not such a
+     *   container. Nothing is stored and any previous container stays in place.
+     */
+    public fun configureOwnEventInfoEnvelopeV2(container: ByteArray?) {
+        if (container == null) {
+            synchronized(eventInfoStateLock) { ownEnvelopeV2Container = null }
+            emitDebug("info", "own_envelope_v2", mapOf("supplied" to false))
+            return
+        }
+        validateOwnEnvelopeV2Container(container)
+        val copy = container.copyOf()
+        // This device now has an own value, so it can no longer put a relayed
+        // container on the wire. Drop any lease here rather than at the next
+        // advanceParticipantRelay, so isRelayServing never claims a broadcast
+        // that has already stopped being possible.
+        val decisions = synchronized(eventInfoStateLock) {
+            ownEnvelopeV2Container = copy
+            tearDownParticipantRelayLocked("own_value_precedence")
+            drainRelayDecisionsLocked()
+        }
+        emitRelayDecisions(decisions)
+        emitDebug("info", "own_envelope_v2", mapOf("supplied" to true, "bytes" to copy.size))
+    }
+
+    /** The container this device serves as its own hop-zero value, if any. */
+    public fun ownEventInfoEnvelopeV2(): ByteArray? =
+        synchronized(eventInfoStateLock) { ownEnvelopeV2Container?.copyOf() }
+
+    /**
+     * Structural gate for a host-supplied own container: the first two guards
+     * of [BarnardB005EnvelopeV2.verify] plus a hop-zero requirement. `verify`
+     * itself is deliberately not called — it needs the current ENIN and would
+     * reject a container issued ahead of its own validity window.
+     */
+    private fun validateOwnEnvelopeV2Container(container: ByteArray) {
+        if (container.size < 5 || container.size > 512) {
+            throw BarnardOwnEnvelopeV2Exception(BarnardOwnEnvelopeV2Error.INVALID_CONTAINER_LENGTH)
+        }
+        if (container[0].toInt() and 0xFF != BarnardB005EnvelopeV2.FORMAT_VERSION) {
+            throw BarnardOwnEnvelopeV2Exception(BarnardOwnEnvelopeV2Error.UNSUPPORTED_FORMAT_VERSION)
+        }
+        if (container[1].toInt() and 0xFF != 0) {
+            throw BarnardOwnEnvelopeV2Exception(BarnardOwnEnvelopeV2Error.NON_ZERO_HOP_COUNT)
+        }
+        val envelopeLength = (container[2].toInt() and 0xFF) shl 8 or (container[3].toInt() and 0xFF)
+        if (envelopeLength > 508 || envelopeLength != container.size - 4) {
+            throw BarnardOwnEnvelopeV2Exception(BarnardOwnEnvelopeV2Error.ENVELOPE_LENGTH_MISMATCH)
+        }
+    }
+
+    /**
      * Enables spec 134 participant relay, or disables it when [verifier] is null.
      *
      * The verifier is host-supplied on purpose. Spec 134 step 3 requires the
@@ -480,8 +553,17 @@ public class BarnardEngine(private val appContext: Context) {
         return drainRelayDecisionsLocked()
     }
 
-    /** This device's own B005 event-info value, when it has one to serve. */
-    private fun ownEventInfoPayloadLocked(): ByteArray? = try {
+    /**
+     * This device's own B005 event-info value, when it has one to serve.
+     *
+     * Two forms, and the signed one wins: a host-supplied hop-zero v2
+     * container (spec 122), else the v1 [BarnardEventInfoCodec] payload. Both
+     * count as an own value everywhere precedence is decided, including the
+     * election gate — a device serving a signed hop-zero container of its own
+     * cannot put a relayed one on the wire either, so it must not elect or
+     * hold density state for one.
+     */
+    private fun ownEventInfoValueLocked(): ByteArray? = ownEnvelopeV2Container ?: try {
         BarnardEventInfoCodec.payloadIfServing(
             eventInfoServePolicy,
             eventCode,
@@ -492,7 +574,7 @@ public class BarnardEngine(private val appContext: Context) {
         null
     }
 
-    private fun isServingOwnEventInfoLocked(): Boolean = ownEventInfoPayloadLocked() != null
+    private fun isServingOwnEventInfoLocked(): Boolean = ownEventInfoValueLocked() != null
 
     private fun ensureParticipantRelayLocked(): BarnardParticipantRelay? {
         val verifier = relayVerifier ?: return null
@@ -564,6 +646,10 @@ public class BarnardEngine(private val appContext: Context) {
      * must keep serving hop zero rather than demote itself to a forwarder, and
      * the spec's one-payload-at-a-time rule forbids serving both.
      *
+     * The own value itself has two forms, and the signed one wins: a
+     * host-supplied hop-zero v2 container, else the v1 [BarnardEventInfoCodec]
+     * payload, else the relayed container, else the read is refused.
+     *
      * [advanceParticipantRelay] enforces the same precedence before this
      * chooses, so a device with an own value has no lease left to fall back to.
      */
@@ -572,7 +658,7 @@ public class BarnardEngine(private val appContext: Context) {
         val value: ByteArray?
         synchronized(eventInfoStateLock) {
             decisions = advanceParticipantRelayLocked()
-            value = ownEventInfoPayloadLocked() ?: relayServedContainer
+            value = ownEventInfoValueLocked() ?: relayServedContainer
         }
         emitRelayDecisions(decisions)
         return value
