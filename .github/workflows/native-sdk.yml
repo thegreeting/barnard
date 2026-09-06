@@ -162,6 +162,31 @@ jobs:
           xcodebuild -project BarnardNativeExample.xcodeproj -scheme BarnardNativeExample \
             -destination "id=${{ steps.destination.outputs.udid }}" build
 
+  macos-lab-runner-example:
+    # Build only: GitHub's macOS runners have no Bluetooth radio, so the runner
+    # is never executed here. The device lab on the real lab host does that.
+    runs-on: macos-15
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: examples/macos-lab-runner
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+      - name: Check lab runner script syntax
+        run: |
+          bash -n scripts/bundle.sh
+          bash -n scripts/run.sh
+      - name: Build headless macOS lab runner
+        # SwiftPM only: the lab host has a Swift toolchain but no XcodeGen and
+        # no Homebrew, so the runner must build without either.
+        run: swift build -c release
+      - name: Assemble and sign the app bundle
+        # Ad-hoc, since the runner has no keychain. Nothing is executed: these
+        # runners have no Bluetooth radio.
+        run: ./scripts/bundle.sh
+
   android-library:
     # Flutter-free: builds/tests packages/android/barnard directly. No
     # Flutter or React Native toolchain is installed in this job (barnard#56
