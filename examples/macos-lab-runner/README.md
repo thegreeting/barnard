@@ -59,7 +59,8 @@ orchestrator greps for:
 | `BARNARD_MACHOST_RELAY=<decision>:<digest>` | Every spec 134 relay decision. |
 
 `RESULT=PASS|FAIL|ERROR <detail>` is always the last line, on every exit path
-including a signal and an argument error.
+including a signal and an argument error. The one exception is `--help`, which
+prints usage and exits 0: asking how to run the thing is not a run.
 
 A peer's display id comes from a GATT read that finishes after the first
 advertisement is seen, so `BARNARD_MACHOST_FOUND` usually follows a few
@@ -70,8 +71,8 @@ detection lines rather than the first one.
 | Code | Result line | Meaning |
 | --- | --- | --- |
 | 0 | `PASS` | At least `--expect-peers` distinct peers were found. |
-| 1 | `ERROR` | Argument or build problem. The radio was never exercised. |
-| 2 | `FAIL` | The radio worked but the rendezvous did not happen in time. Also the SIGTERM path (`RESULT=FAIL interrupted`). |
+| 1 | `ERROR` | Argument or build problem. The radio was never exercised. Also the SIGTERM path, which prints `RESULT=FAIL interrupted`: an interrupted run produced no verdict about the radio. |
+| 2 | `FAIL` | The radio worked but the rendezvous did not happen in time. |
 | 3 | `ERROR` | Bluetooth is denied, restricted, powered off, unsupported, or the one-time grant has not been made. |
 
 The split matters for the lab: exit 2 is a real result about the radio, and

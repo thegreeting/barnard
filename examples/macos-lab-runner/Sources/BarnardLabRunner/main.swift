@@ -11,7 +11,8 @@ import Foundation
 enum LabExit: Int32 {
   /// Rendezvous met.
   case pass = 0
-  /// Harness or argument problem; the radio was never really exercised.
+  /// Harness or argument problem, and the interrupt path: in none of these did
+  /// the radio produce a verdict about a rendezvous.
   case harness = 1
   /// The radio worked but the rendezvous condition was not met in time.
   case rendezvousNotMet = 2
@@ -40,7 +41,6 @@ final class LabRunner {
   /// are what separates "not granted" from "granted but the radio is off".
   private var centralState: CBManagerState?
   private var peripheralState: CBManagerState?
-  private var relayTimer: DispatchSourceTimer?
 
   init(options: LabOptions, reporter: LabReporter) {
     self.options = options
@@ -56,16 +56,10 @@ final class LabRunner {
     engine.configure(eventCode: options.eventCode)
 
     if options.relayEnabled {
+      // No timer here: the engine drives the relay's expiry and lease
+      // decisions itself while one is configured, so a host that adds its own
+      // tick only duplicates work the engine already does.
       engine.configureParticipantRelay(verifier: LabPermissiveRelayVerifier())
-      // The relay only takes lease decisions when it is advanced, and a device
-      // that stops hearing anything would otherwise keep serving an expired
-      // lease. One tick per decision boundary is the documented minimum.
-      let timer = DispatchSource.makeTimerSource(queue: .main)
-      let interval = Double(BarnardEngine.relayDecisionBoundaryMilliseconds) / 1000.0
-      timer.schedule(deadline: .now() + interval, repeating: interval)
-      timer.setEventHandler { [weak self] in self?.engine.advanceParticipantRelay() }
-      timer.resume()
-      relayTimer = timer
     }
 
     reporter.emitJson([
@@ -120,7 +114,7 @@ final class LabRunner {
       signal(signalNumber, SIG_IGN)
       let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
       source.setEventHandler { [weak self] in
-        self?.finish(.rendezvousNotMet, "FAIL", "interrupted")
+        self?.finish(.harness, "FAIL", "interrupted")
       }
       source.resume()
       signalSources.append(source)
@@ -252,7 +246,10 @@ final class LabRunner {
     guard let displayId, !displayId.isEmpty, !finished else { return }
     guard foundPeers.insert(displayId).inserted else { return }
     reporter.emitMarker("BARNARD_MACHOST_FOUND=\(displayId)")
-    if foundPeers.count >= options.expectPeers {
+    // `--expect-peers 0` is a hold that runs to the timeout, and `count >= 0`
+    // is true of the very first peer, so the rendezvous branch has to exclude
+    // it or the hold ends the moment anything is seen.
+    if options.expectPeers > 0, foundPeers.count >= options.expectPeers {
       finish(.pass, "PASS", "peers=\(foundPeers.count) expected=\(options.expectPeers)")
     }
   }
@@ -311,8 +308,6 @@ final class LabRunner {
   private func finish(_ code: LabExit, _ verdict: String, _ detail: String) {
     guard !finished else { return }
     finished = true
-    relayTimer?.cancel()
-    relayTimer = nil
     engine.dispose()
     reporter.emitResult(verdict, detail)
     exit(code.rawValue)
@@ -332,6 +327,11 @@ do {
   // `dispatchMain` services. Every exit path goes through `finish`, which
   // prints the `RESULT=` line and calls `exit`.
   dispatchMain()
+} catch LabOptionsError.helpRequested {
+  // Asking for help is not a run, so it prints usage on stdout and stops.
+  // There is no RESULT line because there was no result.
+  print(LabOptions.usage)
+  exit(0)
 } catch {
   FileHandle.standardError.write(Data((LabOptions.usage + "\n").utf8))
   reporter.emitResult("ERROR", "\(error)")
