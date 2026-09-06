@@ -237,10 +237,11 @@ public class BarnardRelayDecisionEvent(
      * [BarnardRelayDecision.STOP] it is the hop last served.
      */
     public val hop: Int,
-    /** `elected`, `renewed`, `lease_ended`, `host_stop`, or `definition_invalidated`. */
+    /**
+     * `elected`, `renewed`, `lease_ended`, `host_stop`,
+     * `definition_invalidated`, or `own_value_precedence`.
+     */
     public val reason: String,
-    /** The peer whose observation triggered the decision, when one did. */
-    public val peripheralId: String?,
 )
 
 public sealed class BarnardEvent {
