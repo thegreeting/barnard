@@ -77,6 +77,22 @@ final class BarnardEngineB005EnvelopeV2Tests: XCTestCase {
     XCTAssertFalse(hasHint(events))
   }
 
+  func testMalformedContainerLengthEmitsUnverified() throws {
+    let container = try XCTUnwrap(hexData(try vector("v1_container")))
+    // Truncate a valid vector by a few bytes without updating the declared
+    // `signedEnvelopeLength` header field, so it no longer ends exactly at
+    // the container boundary (spec 122 "Delivery container" table).
+    let truncated = container.dropLast(4)
+
+    let events = collectEvents(value: truncated, currentEnin: vectorEnin)
+
+    let emitted = try XCTUnwrap(envelopeV2Event(events), "a malformed container must still reach the host")
+    XCTAssertEqual(emitted.receiverState, .UNVERIFIED)
+    XCTAssertNil(emitted.verifiedEnvelope)
+    XCTAssertEqual(emitted.rawContainer, truncated)
+    XCTAssertFalse(hasHint(events))
+  }
+
   func testV1PayloadStillEmitsHintAndNeverTheV2Case() throws {
     // Golden v1 B005 payload from BarnardEventInfoTests, with its B004 hash.
     let payload = try XCTUnwrap(

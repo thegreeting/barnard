@@ -17,10 +17,13 @@ driver draws the drafted summary from (see `RELEASING.md`).
 - **`BarnardEvent` gains a case.** `eventInfoEnvelopeV2` (Swift) /
   `EventInfoEnvelopeV2` (Kotlin) is emitted when the engine reads a B005 v2
   signed envelope. This is a **source-breaking change for consumers that switch
-  exhaustively over `BarnardEvent`**: a Swift `switch` with no `default` and a
-  Kotlin `when` used as an expression both stop compiling until the new case is
-  handled. No wire format, stored data, or existing event changed, so it is a
-  recompile, not a migration. (barnard#186)
+  exhaustively over `BarnardEvent`**: a Swift `switch` with no `default`, a
+  Kotlin `when` used as an expression, and (with Kotlin 2.2.20, the version the
+  published Android library uses) a `when` used as a statement with no `else`
+  all stop compiling until the new case is handled. Add a branch for the new
+  case, or add `default:` / `else ->`, on both platforms. No wire format,
+  stored data, or existing event changed, so it is a recompile, not a
+  migration. (barnard#186)
 
 ### Added
 

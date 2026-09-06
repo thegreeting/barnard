@@ -97,6 +97,25 @@ class BarnardEngineB005EnvelopeV2Test {
     }
 
     @Test
+    fun malformedContainerLengthEmitsUnverified() {
+        val container = hex(vector("v1_container"))
+        // Truncate a valid vector by a few bytes without updating the declared
+        // `signedEnvelopeLength` header field, so it no longer ends exactly at
+        // the container boundary (spec 122 "Delivery container" table).
+        val truncated = container.copyOfRange(0, container.size - 4)
+
+        val events = collectEvents(truncated)
+
+        val emitted = envelopeV2Event(events)
+        assertNotNull("a malformed container must still reach the host", emitted)
+        emitted!!
+        assertEquals(BarnardB005ReceiverState.UNVERIFIED, emitted.receiverState)
+        assertNull(emitted.verifiedEnvelope)
+        assertArrayEquals(truncated, emitted.rawContainer)
+        assertFalse(hasHint(events))
+    }
+
+    @Test
     fun v1PayloadStillEmitsHintAndNeverTheV2Case() {
         // Golden v1 B005 payload from BarnardEventInfoTest, with its B004 hash.
         val payload = hex("010100124261726e61726420436f72652053706c69740200080b9f14789f13968f")
