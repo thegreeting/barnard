@@ -46,7 +46,7 @@ class BarnardEngineOwnEnvelopeV2Test {
 
         engine.configureOwnEventInfoEnvelopeV2(container)
 
-        assertArrayEquals(container, engine.ownEventInfoEnvelopeV2())
+        assertArrayEquals(container, engine.ownEventInfoEnvelopeV2)
         val served = engine.eventInfoValueForRead()
         assertNotNull(served)
         assertArrayEquals("the container must reach the wire unchanged", container, served)
@@ -66,7 +66,7 @@ class BarnardEngineOwnEnvelopeV2Test {
             BarnardOwnEnvelopeV2Error.NON_ZERO_HOP_COUNT,
             rejection(engine, container),
         )
-        assertNull(engine.ownEventInfoEnvelopeV2())
+        assertNull(engine.ownEventInfoEnvelopeV2)
         assertNull(engine.eventInfoValueForRead())
     }
 
@@ -80,7 +80,7 @@ class BarnardEngineOwnEnvelopeV2Test {
             BarnardOwnEnvelopeV2Error.UNSUPPORTED_FORMAT_VERSION,
             rejection(engine, container),
         )
-        assertNull(engine.ownEventInfoEnvelopeV2())
+        assertNull(engine.ownEventInfoEnvelopeV2)
     }
 
     @Test
@@ -133,7 +133,7 @@ class BarnardEngineOwnEnvelopeV2Test {
             engine.eventInfoValueForRead()!![0].toInt() and 0xFF,
         )
         engine.configureOwnEventInfoEnvelopeV2(null)
-        assertNull(engine.ownEventInfoEnvelopeV2())
+        assertNull(engine.ownEventInfoEnvelopeV2)
         assertArrayEquals(v1, engine.eventInfoValueForRead())
 
         // The joined event code is persisted; restore anonymous mode.
@@ -153,8 +153,26 @@ class BarnardEngineOwnEnvelopeV2Test {
         engine.stopAdvertise()
         shadowOf(Looper.getMainLooper()).idle()
 
-        assertArrayEquals(container, engine.ownEventInfoEnvelopeV2())
+        assertArrayEquals(container, engine.ownEventInfoEnvelopeV2)
         assertArrayEquals(container, engine.eventInfoValueForRead())
+    }
+
+    @Test
+    fun leavingTheEventAlsoKeepsTheContainerUntilTheHostClearsIt() {
+        val container = vectorContainer()
+        val engine = newEngine()
+        engine.joinEvent("BARNARD-OWN-V2-TEST")
+        engine.configureOwnEventInfoEnvelopeV2(container)
+
+        engine.leaveEvent()
+
+        // Pinning the current rule rather than endorsing it: the host owns the
+        // container's whole lifetime, because the engine does not track the
+        // eventId the container commits to and cannot tell a stale one from a
+        // valid one. See DESIGN-NOTES 0.2d.
+        assertArrayEquals(container, engine.eventInfoValueForRead())
+        engine.configureOwnEventInfoEnvelopeV2(null)
+        assertNull(engine.eventInfoValueForRead())
     }
 
     // --- 4. Precedence over a relayed container ---

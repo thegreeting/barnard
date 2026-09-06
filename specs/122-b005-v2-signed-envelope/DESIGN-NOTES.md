@@ -485,6 +485,16 @@ is an organizer-designated source. A signed container answers that question by i
 contents, and supplying it is itself the decision. Requiring both would let a host hold a valid
 signed envelope and silently serve nothing.
 
+**Nothing else clears it either, and that is the open risk.** `leaveEvent`, `joinEvent` and
+`configure` all leave a supplied container in place, so a device that leaves an event keeps
+serving the previous organiser's signed envelope until the host clears it. The engine cannot
+decide this for the host: the container commits to an `eventId` the engine does not track, and
+guessing wrong either drops a valid configuration or serves a stale one. The rule is therefore
+that the host owns the container's whole lifetime — supply it when the event starts, clear it
+when the event ends. Worth revisiting if a consumer trips over it; the cheap fix would be
+clearing on `leaveEvent` only, which is the one call that unambiguously says "this device is no
+longer part of that event".
+
 **Stopping Advertise does not clear it.** This is a deliberate asymmetry with the relay lease,
 which `stopAdvertise` tears down. The lease is engine-elected state, and spec 134 requires a
 resume to recheck every guard rather than restore it. The supplied container is host state the

@@ -122,6 +122,24 @@ final class BarnardEngineOwnEnvelopeV2Tests: XCTestCase {
     XCTAssertEqual(engine.eventInfoValueForRead(), container)
   }
 
+  func testLeavingTheEventAlsoKeepsTheContainerUntilTheHostClearsIt() throws {
+    let container = try vectorContainer()
+    let engine = BarnardEngine()
+    defer { engine.leaveEvent() }
+    engine.joinEvent("BARNARD-OWN-V2-TEST")
+    try engine.configureOwnEventInfoEnvelopeV2(container: container)
+
+    engine.leaveEvent()
+
+    // Pinning the current rule rather than endorsing it: the host owns the
+    // container's whole lifetime, because the engine does not track the
+    // eventId the container commits to and cannot tell a stale one from a
+    // valid one. See DESIGN-NOTES 0.2d.
+    XCTAssertEqual(engine.eventInfoValueForRead(), container)
+    try engine.configureOwnEventInfoEnvelopeV2(container: nil)
+    XCTAssertNil(engine.eventInfoValueForRead())
+  }
+
   // MARK: - 4. Precedence over a relayed container
 
   func testSuppliedContainerBeatsARelayedOneAndEndsTheLease() throws {

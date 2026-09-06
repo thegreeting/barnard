@@ -428,8 +428,8 @@ public class BarnardEngine(private val appContext: Context) {
     }
 
     /** The container this device serves as its own hop-zero value, if any. */
-    public fun ownEventInfoEnvelopeV2(): ByteArray? =
-        synchronized(eventInfoStateLock) { ownEnvelopeV2Container?.copyOf() }
+    public val ownEventInfoEnvelopeV2: ByteArray?
+        get() = synchronized(eventInfoStateLock) { ownEnvelopeV2Container?.copyOf() }
 
     /**
      * Structural gate for a host-supplied own container: the first two guards
