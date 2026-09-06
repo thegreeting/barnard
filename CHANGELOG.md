@@ -33,6 +33,16 @@ driver draws the drafted summary from (see `RELEASING.md`).
 
 ### Added
 
+- **macOS is a supported platform.** Both Swift package manifests declare
+  `.macOS("12.0")` alongside `.iOS("14.0")` — macOS 12 and later, the lowest
+  deployment target the current toolchain can build — and the whole package builds and
+  tests natively on macOS. `BarnardEngine` runs as a real-radio Central and
+  Peripheral there; the iOS-only foreground-return advertising restart is
+  absent (macOS does not background-demote the advertised service UUID) and
+  `openAppSettings()` is a documented no-op. Non-breaking: no iOS behaviour,
+  wire format, or stored data changed. This entry is written under 0.8.0
+  because that is the open section; it may ship in a later release, and the
+  release driver will place it. (barnard#192)
 - The engine verifies B005 v2 signed envelopes on the receive path (spec 122).
   A container whose `formatVersion` is `0x03` is passed to
   `BarnardB005EnvelopeV2.verify` with the engine's current ENIN, and the result

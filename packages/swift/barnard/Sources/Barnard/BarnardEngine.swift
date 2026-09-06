@@ -5,7 +5,9 @@ import BarnardCore
 #endif
 import CoreBluetooth
 import Foundation
+#if canImport(UIKit)
 import UIKit
+#endif
 
 /// Flutter-free, Swift-first public event/value types for `BarnardEngine`.
 ///
@@ -489,7 +491,12 @@ public final class BarnardEngine: NSObject {
     registerForApplicationLifecycleNotifications()
   }
 
+  // UIKit-only. macOS AppKit has no equivalent worth observing here: the
+  // advertising bounce below exists solely to undo iOS's backgrounding of our
+  // service UUID into the AdvData overflow area, which macOS does not do. On
+  // macOS this registers nothing and advertising simply keeps running.
   private func registerForApplicationLifecycleNotifications() {
+    #if canImport(UIKit)
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(appDidBecomeActive),
@@ -502,6 +509,7 @@ public final class BarnardEngine: NSObject {
       name: UIApplication.willResignActiveNotification,
       object: nil
     )
+    #endif
   }
 
   deinit {
@@ -958,11 +966,20 @@ public final class BarnardEngine: NSObject {
     }
   }
 
+  /// Opens the host app's system settings page.
+  ///
+  /// iOS only. On macOS this is a deliberate no-op: there is no per-app
+  /// settings URL, and opening System Settings from a library call would be a
+  /// surprising side effect for a headless or test process. macOS hosts should
+  /// direct the user to System Settings > Privacy & Security > Bluetooth
+  /// themselves.
   public func openAppSettings() {
+    #if canImport(UIKit)
     guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
     DispatchQueue.main.async {
       UIApplication.shared.open(url)
     }
+    #endif
   }
 
   public func startScan(allowDuplicates: Bool = true) {
@@ -1050,6 +1067,7 @@ public final class BarnardEngine: NSObject {
   // not automatically repromote the UUID, so peers that started their scan
   // while we were backgrounded will never discover us. Bounce advertising on
   // foreground resume to repopulate the AdvData section. See issue #45.
+  #if canImport(UIKit)
   @objc private func appDidBecomeActive() {
     guard isAdvertising else {
       emitDebug(level: "trace", name: "foreground_resume", data: ["isAdvertising": false])
@@ -1067,6 +1085,7 @@ public final class BarnardEngine: NSObject {
       "isAdvertising": isAdvertising,
     ])
   }
+  #endif
 
   // MARK: - Scan Control
 
