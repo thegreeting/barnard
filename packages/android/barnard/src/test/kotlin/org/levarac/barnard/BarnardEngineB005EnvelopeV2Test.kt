@@ -125,6 +125,9 @@ class BarnardEngineB005EnvelopeV2Test {
         assertEquals(BarnardB005ReceiverState.UNVERIFIED, emitted.receiverState)
         assertNull(emitted.verifiedEnvelope)
         assertArrayEquals(truncated, emitted.rawContainer)
+        // A malformed container must still name its peer, for the same reason
+        // a failed signature does: a host has nothing else to correlate on.
+        assertEquals(seamAddress, emitted.peripheralId)
         assertFalse(hasHint(events))
     }
 

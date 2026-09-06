@@ -101,6 +101,9 @@ final class BarnardEngineB005EnvelopeV2Tests: XCTestCase {
     XCTAssertEqual(emitted.receiverState, .UNVERIFIED)
     XCTAssertNil(emitted.verifiedEnvelope)
     XCTAssertEqual(emitted.rawContainer, truncated)
+    // A malformed container must still name its peer, for the same reason a
+    // failed signature does: a host has nothing else to correlate on.
+    XCTAssertEqual(emitted.peripheralId, seamPeripheralId)
     XCTAssertFalse(hasHint(events))
   }
 
