@@ -106,6 +106,14 @@ class MainActivity : AppCompatActivity() {
                 append("event_info_hint: name=${hint.eventInfo.eventDisplayName} " +
                     "additionalNamesOmitted=${hint.additionalNamesOmitted} additionalEventsOmitted=${hint.additionalEventsOmitted}")
             }
+            is BarnardEvent.EventInfoEnvelopeV2 -> {
+                // Only the state and the size are logged. RADIO_SELF_VERIFIED means
+                // the signature checks out, not that the event is registered, so it
+                // must not be presented to a user as "verified".
+                val envelope = event.envelope
+                append("event_info_envelope_v2: receiverState=${envelope.receiverState} " +
+                    "bytes=${envelope.rawContainer.size}")
+            }
         }
     }
 
