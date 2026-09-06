@@ -355,7 +355,7 @@ to take, and it leaves density handles accumulating for a broadcast this device 
 
 Note what this precedence does *not* do: the own value is still the v1 `BarnardEventInfoCodec`
 payload, so an organizer-designated device does not yet serve a hop-zero v2 container. That is a
-pre-existing gap in the emission side, untouched here.
+pre-existing gap in the emission side, untouched here. *(Closed in barnard#189; see §0.2d.)*
 
 **Lifecycle.** `hostStop()` is terminal on the relay type, so the engine drops the instance rather
 than reusing it and builds a fresh one on the next observation. Stopping Scan or Advertise tears it
@@ -416,6 +416,86 @@ by forcing entry at r = 0 and populating the handles one millisecond before the 
 33rd handle in a window still marks saturation without being retained, and the marker still ages
 out on its own T. The relay driving added no new handle-cap behaviour and inherits whatever #181
 settles.
+
+---
+
+## 0.2d Serving a hop-zero v2 container of our own
+
+*Recorded when the own-value serving landed (barnard#189, ships in 0.8.0). This closes the
+emission gap §0.2c names: until now no device served a hop-zero v2 container, so in a real
+venue the receive path had nothing to receive and the relay nothing to relay.*
+
+**The host signs, the engine serves.** `configureOwnEventInfoEnvelopeV2` takes container bytes
+the host already built with `BarnardB005EnvelopeV2.encodeContainer` and signed, in either
+authority-direct or delegate mode. The SDK holds no authority key and has no registry access,
+so it cannot sign and must not appear to: it does not re-encode, does not re-sign, and never
+assigns `REGISTRY_VERIFIED`. Passing `nil`/`null` clears the container.
+
+**The gate is structural, and deliberately so.** The engine checks four things — 5 to 512
+bytes, byte 0 equal to `0x03`, byte 1 equal to zero, and the big-endian envelope length at
+bytes 2-3 agreeing with the byte count. Those are the first guards of
+`BarnardB005EnvelopeV2.verify` plus a hop-zero requirement.
+
+`verify` itself is *not* called, which is the one non-obvious choice here. It needs the current
+ENIN and rejects anything outside `[validFromEnin, relayExpiresAtEnin)`, so calling it would
+refuse a container the host obtained ahead of the event it is for — a normal thing to do,
+since an organizer device is provisioned before doors open. Rejecting at configure time would
+also be the wrong place to fail: the host cannot tell an expired signature from a malformed
+one by the time it holds bytes. The conservative reading is therefore to gate on *shape* and
+let the peer's own `verify` be the authority on validity, which it is anyway — a peer never
+trusts what we assert about our own container.
+
+Hop zero is required rather than normalised. A container arriving at hop 1 is a relayed copy,
+and silently rewriting its hop byte would produce a container whose bytes no longer match what
+its signer produced at the position it claims. Refusing is the reading that cannot mislead.
+
+A rejected container leaves any previously supplied one in place. A failed configure call
+should not silently take a device off the air.
+
+**Precedence, extending §0.2c.** The B005 read at offset zero now picks, in order:
+
+1. the host-supplied hop-zero v2 container;
+2. this device's own v1 `BarnardEventInfoCodec` payload;
+3. the relayed container;
+4. otherwise the read is refused.
+
+Own-value-first from §0.2c is unchanged — both forms of own value beat a relayed one. Within
+the own value the signed form wins, because a device holding an authority-signed statement
+about its event has strictly more to say than the unsigned v1 hint, and the
+one-payload-at-a-time rule forbids serving both.
+
+**A supplied container is an own value for the election gate too, not only the read chooser.**
+barnard#187 moved precedence ahead of election so the relay never holds a lease the device
+could not put on the wire, and the same reasoning applies unchanged here: a device serving a
+signed hop-zero container of its own would shadow any relayed one, so it does not observe,
+elect, or hold density state for one. Supplying a container tears down a lease already held,
+with decision reason `own_value_precedence`, at the configure call rather than at the next
+`advanceParticipantRelay` — otherwise `isRelayServing` would keep claiming a broadcast that
+had already stopped being possible.
+
+**The v1 path is untouched.** With no container supplied, the same
+`BarnardEventInfoCodec.payloadIfServing` call runs under the same
+`configureEventInfoServing` policy and produces the same bytes as 0.7.0. Existing consumers
+observe no change, which the tests assert by serving v1, supplying a container, clearing it,
+and comparing the restored bytes to the original.
+
+**A supplied container is not gated on `configureEventInfoServing`.** That policy exists
+because the v1 payload carries no signature and needs a host decision about whether this device
+is an organizer-designated source. A signed container answers that question by its own
+contents, and supplying it is itself the decision. Requiring both would let a host hold a valid
+signed envelope and silently serve nothing.
+
+**Stopping Advertise does not clear it.** This is a deliberate asymmetry with the relay lease,
+which `stopAdvertise` tears down. The lease is engine-elected state, and spec 134 requires a
+resume to recheck every guard rather than restore it. The supplied container is host state the
+engine was handed and never elected; discarding it would silently drop a host's configuration
+on a transient radio stop, and the host has no event telling it to re-supply. Only the host
+clears it.
+
+**Testability.** The round-trip case takes the bytes the serving path returns and feeds them
+straight into the §0.2b receive seam on a second engine, which reports `RADIO_SELF_VERIFIED` at
+hop zero. That is the closest a unit test gets to the two-device claim; the on-air confirmation
+stays with the lab issue.
 
 ---
 
