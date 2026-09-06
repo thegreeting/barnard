@@ -227,15 +227,19 @@ existed and was tested, but `BarnardEngine` only ever parsed a B005 read as a v1
 cannot close that gap itself, because a host has no GATT access of its own and so never sees the
 container bytes.
 
-**The emission boundary.** The engine dispatches on the first byte of the value it reads from the
-B005 event-info characteristic:
+**The emission boundary.** The engine applies one test to the value it reads from the B005
+event-info characteristic: is the first byte `0x03`?
 
-- `0x01` — the v1 hint. Unchanged: parsed by `BarnardEventInfoCodec`, gated on B004 agreement, and
-  emitted as `eventInfoHint` / `EventInfoHint`.
-- `0x03` — a spec 122 v2 signed envelope. The engine calls `verify` itself, with its own current
-  ENIN, and emits the new `eventInfoEnvelopeV2` / `EventInfoEnvelopeV2` event carrying the receipt,
-  the raw container bytes, and the peer handle. The raw bytes are passed through unaltered because
-  spec 134 re-broadcast has to preserve the signature byte for byte.
+If it is, the value is treated as a spec 122 v2 signed envelope. The engine calls `verify` itself,
+with its own current ENIN, and emits the new `eventInfoEnvelopeV2` / `EventInfoEnvelopeV2` event
+carrying the receipt, the raw container bytes, and the peer handle. The raw bytes are passed through
+unaltered because spec 134 re-broadcast has to preserve the signature byte for byte.
+
+Everything else — a `0x01` hint, an empty read, any other leading byte — continues down the
+unchanged v1 path, where `BarnardEventInfoCodec` decides what it is. That codec already rejects any
+payload whose version byte is not `0x01`, and it rejects a value too short to carry one, so the v2
+test is a one-way branch off the existing path rather than a second version table to keep in step
+with it. A rejected value is recorded as semantically unavailable exactly as before.
 
 Every `0x03` container is emitted, verified or not. A failed envelope reaches the host rather than
 being dropped, so a host can tell "no v2 peer" from "a v2 peer whose envelope did not check out".
