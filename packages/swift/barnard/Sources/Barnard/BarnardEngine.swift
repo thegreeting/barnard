@@ -175,6 +175,34 @@ public struct BarnardEventInfoEnvelopeV2Event {
   public var verifiedEnvelope: BarnardB005VerifiedEnvelope? { receipt.verifiedEnvelope }
 }
 
+/// What the spec 134 density controller decided about the selected envelope.
+///
+/// The controller renews a lease by ending the old one and electing again, so
+/// a `.keep` is always preceded by a `.stop` for the same digest. `.keep` is
+/// the engine's name for "elected again with the digest that was just being
+/// served"; the relay itself draws no distinction.
+public enum BarnardRelayDecision: String {
+  case broadcast
+  case keep
+  case stop
+}
+
+/// A spec 134 relay decision, surfaced so a host can observe whether and why
+/// an envelope was re-broadcast. No peer handle, election secret, or density
+/// count leaves the controller: the envelope is identified by its payload
+/// digest, which is already derivable from the bytes on the wire.
+public struct BarnardRelayDecisionEvent {
+  public let decision: BarnardRelayDecision
+  /// `SHA256(signedEnvelope)` of the envelope the decision is about.
+  public let payloadDigest: Data
+  /// The `relayHopCount` this device serves (observed minimum + 1). For
+  /// `.stop` it is the hop last served.
+  public let hop: Int
+  /// `elected`, `renewed`, `lease_ended`, `host_stop`,
+  /// `definition_invalidated`, or `own_value_precedence`.
+  public let reason: String
+}
+
 public enum BarnardEvent {
   case state(BarnardState)
   case constraint(BarnardConstraintEvent)
@@ -183,6 +211,32 @@ public enum BarnardEvent {
   case rssiUpdate(BarnardRssiUpdateEvent)
   case eventInfoHint(BarnardEventInfoHintEvent)
   case eventInfoEnvelopeV2(BarnardEventInfoEnvelopeV2Event)
+  case relayDecision(BarnardRelayDecisionEvent)
+}
+
+/// Default relay clock: uptime milliseconds, unaffected by wall-clock jumps.
+internal final class BarnardEngineRelayUptimeClock: BarnardRelayMonotonicClock {
+  func relayNowMilliseconds() -> Int64 { Int64(ProcessInfo.processInfo.systemUptime * 1000.0) }
+}
+
+/// Default relay ENIN source: whatever the engine's own B004 clock reports.
+internal final class BarnardEngineRelayEninSource: BarnardRelayEninSource {
+  private let read: () -> UInt32?
+  init(_ read: @escaping () -> UInt32?) { self.read = read }
+  func relayCurrentEnin() -> UInt32? { read() }
+}
+
+/// Default joined-event provider: spec 134 decision 3 lets a verified but
+/// unjoined receiver relay, so "no joined event" is a valid default.
+internal final class BarnardEngineRelayNoJoinedEvent: BarnardRelayJoinedEventProvider {
+  func relayJoinedEventId() -> [UInt8]? { nil }
+}
+
+/// Bridges the relay's start/stop output onto the engine's B005 serving path.
+internal final class BarnardEngineRelaySink: BarnardRelayOutputSink {
+  weak var engine: BarnardEngine?
+  func startServingRelayContainer(_ bytes: [UInt8]) { engine?.relaySinkDidStart(Data(bytes)) }
+  func stopServingRelayContainer() { engine?.relaySinkDidStop() }
 }
 
 public struct BarnardDebugEvent {
@@ -264,6 +318,22 @@ public final class BarnardEngine: NSObject {
   }
   private var eventInfoSnapshots: [UUID: EventInfoSnapshot] = [:]
   private let eventInfoRetryBudget = BarnardEventInfoRetryBudget()
+
+  // MARK: - Spec 134 participant relay
+
+  private var relayVerifier: (any BarnardRelayVerifier)?
+  private var relayJoinedEventProvider: (any BarnardRelayJoinedEventProvider)?
+  private var relaySeedMaterial: [UInt8] = []
+  private var relayClock: (any BarnardRelayMonotonicClock)?
+  private var relayEninSource: (any BarnardRelayEninSource)?
+  private let relaySink = BarnardEngineRelaySink()
+  private var participantRelay: BarnardParticipantRelay?
+  private var relayTimer: DispatchSourceTimer?
+  private var relayServedContainer: Data?
+  private var relayLastServedDigest: Data?
+  /// Set around each relay call so the sink can name the cause of a start or
+  /// stop. The relay's sink protocol carries no reason of its own.
+  private var relayDecisionReason = "elected"
   private var eventInfoDiscoverySession = BarnardEventInfoDiscoverySession(startedAt: Date().timeIntervalSince1970)
   private var shouldStartScanWhenReady = false
   private var shouldStartAdvertiseWhenReady = false
@@ -414,6 +484,10 @@ public final class BarnardEngine: NSObject {
 
   deinit {
     NotificationCenter.default.removeObserver(self)
+    // A resumed DispatchSourceTimer traps if it is released without being
+    // cancelled, so this is required rather than tidiness.
+    relayTimer?.cancel()
+    relayTimer = nil
   }
 
   private func ensureCentralManager() -> CBCentralManager {
@@ -549,6 +623,195 @@ public final class BarnardEngine: NSObject {
       eventActiveForDiscovery: eventActiveForDiscovery
     )
     eventInfoDisplayName = eventDisplayName
+  }
+
+  /// Enables spec 134 participant relay, or disables it when `verifier` is nil.
+  ///
+  /// The verifier is host-supplied on purpose. Spec 134 step 3 requires the
+  /// authoritative on-chain definition before an envelope may be relayed, and
+  /// the SDK has no registry access, so only a `.registryVerified` answer from
+  /// the host unlocks re-broadcast. The engine pre-filters on its own radio
+  /// verification: an unverified container never reaches this verifier.
+  ///
+  /// `clock` and `eninSource` default to the engine's uptime clock and its own
+  /// B004 ENIN; they exist so tests can step 30-second decision epochs.
+  ///
+  /// Call on the main queue, like every other engine method. The relay state
+  /// machine is not thread-safe, and the Swift engine serializes nothing on
+  /// your behalf (the Kotlin engine holds a lock because its GATT server
+  /// callbacks genuinely arrive on binder threads).
+  public func configureParticipantRelay(
+    verifier: (any BarnardRelayVerifier)?,
+    joinedEventProvider: (any BarnardRelayJoinedEventProvider)? = nil,
+    randomnessSeedMaterial: [UInt8]? = nil,
+    clock: (any BarnardRelayMonotonicClock)? = nil,
+    eninSource: (any BarnardRelayEninSource)? = nil
+  ) {
+    tearDownParticipantRelay(reason: "definition_invalidated")
+    relayVerifier = verifier
+    relayJoinedEventProvider = joinedEventProvider
+    relayClock = clock
+    relayEninSource = eninSource
+    relaySeedMaterial = randomnessSeedMaterial ?? [UInt8](BarnardCrypto.sha256(rpid.getDeviceSecret()))
+    relaySink.engine = self
+    emitDebug(level: "info", name: "relay_configured", data: ["enabled": verifier != nil])
+  }
+
+  /// Runs the relay's expiry, selection, contention, and lease decisions.
+  ///
+  /// This is the only path that consults the lease clock. Observations do not
+  /// take lease decisions, so it must be driven on a timer: a device that
+  /// stops hearing anything would otherwise keep serving a lease that has
+  /// already run out. The engine drives it internally while a relay is
+  /// configured, and also calls it before answering a B005 read. A host that
+  /// wants tighter control may call it as well, at least at the decision
+  /// boundary cadence of `BarnardEngine.relayDecisionBoundaryMilliseconds`;
+  /// calling it more often is harmless because the relay takes at most one
+  /// election decision per 30-second epoch.
+  ///
+  /// Call on the main queue, like every other engine method: the relay state
+  /// machine is not thread-safe and the engine serializes nothing for you.
+  public func advanceParticipantRelay() {
+    // Precedence is enforced here rather than at read time, so the relay never
+    // holds a lease this device could not actually put on the wire.
+    guard !isServingOwnEventInfo() else {
+      tearDownParticipantRelay(reason: "own_value_precedence")
+      return
+    }
+    relayDecisionReason = participantRelay?.isServing == true ? "lease_ended" : "elected"
+    participantRelay?.advance()
+  }
+
+  /// True while this device is re-broadcasting a relayed envelope, and hence
+  /// while a peer reading B005 gets the relayed container rather than nothing
+  /// or this device's own value.
+  ///
+  /// Call on the main queue.
+  public var isRelayServing: Bool { participantRelay?.isServing ?? false }
+
+  /// This device's own B005 event-info value, when it has one to serve.
+  private func ownEventInfoPayload() -> Data? {
+    try? BarnardEventInfoCodec.payloadIfServing(
+      policy: eventInfoServePolicy,
+      eventCode: rpid.eventCode,
+      eventDisplayName: eventInfoDisplayName,
+      b004EventCodeHash: rpid.getEventCodeHash()
+    )
+  }
+
+  private func isServingOwnEventInfo() -> Bool { ownEventInfoPayload() != nil }
+
+  /// Spec 134's decision boundary: `T` = 30 seconds.
+  public static let relayDecisionBoundaryMilliseconds = 30_000
+
+  /// How often the engine's internal timer runs the relay forward.
+  ///
+  /// Deliberately shorter than the decision boundary. A lease starts when a
+  /// contention delay ends, so it expires at an arbitrary offset within an
+  /// epoch rather than on the boundary; ticking only every 30 seconds would
+  /// let a lease be served for up to twice its length before anything noticed.
+  /// This bounds that overshoot to one tick. It does not make the device
+  /// decide more often -- the relay still takes at most one election decision
+  /// per epoch -- and it starts no radio work, so the cost is a timer wake-up
+  /// while relaying and nothing at all when the relay is idle.
+  internal static let relayTimerIntervalMilliseconds = 5_000
+
+  /// Test seam: the engine's own timer callback, distinct from a host calling
+  /// `advanceParticipantRelay`.
+  internal func relayTimerDidFire() { advanceParticipantRelay() }
+
+  /// Test seam: whether the self-protecting timer is currently armed.
+  internal var relayTimerIsScheduled: Bool { relayTimer != nil }
+
+  private func startRelayTimerIfNeeded() {
+    guard relayTimer == nil else { return }
+    let timer = DispatchSource.makeTimerSource(queue: .main)
+    let interval = DispatchTimeInterval.milliseconds(Self.relayTimerIntervalMilliseconds)
+    timer.schedule(deadline: .now() + interval, repeating: interval)
+    timer.setEventHandler { [weak self] in self?.relayTimerDidFire() }
+    relayTimer = timer
+    timer.resume()
+  }
+
+  private func stopRelayTimer() {
+    relayTimer?.cancel()
+    relayTimer = nil
+  }
+
+  private func ensureParticipantRelay() -> BarnardParticipantRelay? {
+    guard let verifier = relayVerifier else { return nil }
+    if let existing = participantRelay { return existing }
+    let relay = BarnardParticipantRelay(
+      clock: relayClock ?? BarnardEngineRelayUptimeClock(),
+      eninSource: relayEninSource ?? BarnardEngineRelayEninSource { [weak self] in self?.currentEnin() },
+      verifier: verifier,
+      outputSink: relaySink,
+      joinedEventProvider: relayJoinedEventProvider ?? BarnardEngineRelayNoJoinedEvent(),
+      randomnessSeedMaterial: relaySeedMaterial
+    )
+    participantRelay = relay
+    startRelayTimerIfNeeded()
+    return relay
+  }
+
+  /// Spec 134: stopping Scan or Advertise clears the lease and the cached
+  /// envelope. `hostStop()` is terminal, so the instance is dropped and a
+  /// later observation builds a fresh one that rechecks every guard.
+  private func tearDownParticipantRelay(reason: String) {
+    stopRelayTimer()
+    guard let relay = participantRelay else { return }
+    relayDecisionReason = reason
+    relay.hostStop()
+    participantRelay = nil
+    relayServedContainer = nil
+    relayLastServedDigest = nil
+  }
+
+  internal func relaySinkDidStart(_ container: Data) {
+    relayServedContainer = container
+    let envelope = container.count > 4 ? container.subdata(in: 4..<container.count) : Data()
+    let digest = BarnardCrypto.sha256(envelope)
+    let decision: BarnardRelayDecision = digest == relayLastServedDigest ? .keep : .broadcast
+    relayLastServedDigest = digest
+    let hop = container.count > 1 ? Int(container[1]) : 0
+    let reason = decision == .keep ? "renewed" : relayDecisionReason
+    emitDebug(level: "info", name: "relay_decision", data: [
+      "decision": decision.rawValue, "hop": hop, "reason": reason,
+    ])
+    onEvent?(.relayDecision(BarnardRelayDecisionEvent(
+      decision: decision, payloadDigest: digest, hop: hop, reason: reason
+    )))
+  }
+
+  internal func relaySinkDidStop() {
+    let container = relayServedContainer
+    relayServedContainer = nil
+    let digest = relayLastServedDigest ?? Data()
+    let hop = (container?.count ?? 0) > 1 ? Int(container![1]) : 0
+    emitDebug(level: "info", name: "relay_decision", data: [
+      "decision": BarnardRelayDecision.stop.rawValue, "hop": hop, "reason": relayDecisionReason,
+    ])
+    onEvent?(.relayDecision(BarnardRelayDecisionEvent(
+      decision: .stop, payloadDigest: digest, hop: hop, reason: relayDecisionReason
+    )))
+  }
+
+  /// The relayed container this device is currently serving, if any.
+  internal func relayContainerForServing() -> Data? { relayServedContainer }
+
+  /// The value B005 answers a read at offset zero with.
+  ///
+  /// Precedence: this device's own event-info value wins over a relayed one.
+  /// Spec 134 is silent on the collision, and this is the conservative
+  /// reading -- a device that is itself an organizer-designated direct source
+  /// must keep serving hop zero rather than demote itself to a forwarder, and
+  /// the spec's one-payload-at-a-time rule forbids serving both.
+  ///
+  /// `advanceParticipantRelay` enforces the same precedence before this
+  /// chooses, so a device with an own value has no lease left to fall back to.
+  internal func eventInfoValueForRead() -> Data? {
+    advanceParticipantRelay()
+    return ownEventInfoPayload() ?? relayServedContainer
   }
 
   public func getCurrentEventCode() -> String? {
@@ -738,6 +1001,9 @@ public final class BarnardEngine: NSObject {
 
   private func stopScanInternal() {
     shouldStartScanWhenReady = false
+    // Spec 134: stopping Scan clears the relay lease, the density handles, and
+    // the cached envelope, whether or not Scan was actually running.
+    tearDownParticipantRelay(reason: "host_stop")
     if !isScanning { return }
     centralManager?.stopScan()
     isScanning = false
@@ -817,6 +1083,8 @@ public final class BarnardEngine: NSObject {
 
   private func stopAdvertiseInternal() {
     shouldStartAdvertiseWhenReady = false
+    // Spec 134: without Advertise there is no way to serve a relayed value.
+    tearDownParticipantRelay(reason: "host_stop")
     if !isAdvertising { return }
     peripheralManager?.stopAdvertising()
     isAdvertising = false
@@ -1314,6 +1582,34 @@ public final class BarnardEngine: NSObject {
       receipt: receipt,
       rawContainer: container
     )))
+
+    // Spec 134: only a receipt that this device verified from the radio is
+    // offered to the relay. The relay's own host-supplied verifier then
+    // applies step 3 (registry agreement) before any re-broadcast.
+    guard case .radioSelfVerified = receipt else { return }
+    // A device serving its own event-info value cannot put a relayed container
+    // on the wire, so it does not observe, elect, or hold density state for one.
+    guard !isServingOwnEventInfo() else {
+      tearDownParticipantRelay(reason: "own_value_precedence")
+      return
+    }
+    guard let relay = ensureParticipantRelay() else { return }
+    // Observe only. Spec 134 takes lease decisions "at each 30-second decision
+    // boundary", not on arrival, and `observe` already does the dedup, hop
+    // retention and selection that an observation is responsible for.
+    // Deciding here instead would fix each epoch's decision to the density
+    // observed at that epoch's *first* arrival, so a burst of neighbours
+    // arriving moments later could not suppress it. Decisions run in
+    // `advanceParticipantRelay`, which the host calls at its scheduled wake-up
+    // and which the B005 read path calls before answering.
+    _ = relay.observe(container: [UInt8](container), peerHandle: relayPeerHandle(id))
+  }
+
+  /// Observer-local peer handle. Spec 134: never transmitted, never persisted
+  /// beyond the density window, never interpreted as a person or a device.
+  /// CoreBluetooth's peripheral identifier is already rotated per install.
+  private func relayPeerHandle(_ id: UUID) -> [UInt8] {
+    withUnsafeBytes(of: id.uuid) { Array($0) }
   }
 
   /// Emit v2 detection event. Byte fields are lowercase hex.
@@ -1808,24 +2104,14 @@ extension BarnardEngine: CBPeripheralManagerDelegate {
     let now = Date()
     eventInfoSnapshots = eventInfoSnapshots.filter { now.timeIntervalSince($0.value.lastRequest) <= 30 }
     if request.offset == 0 {
-      do {
-        guard let value = try BarnardEventInfoCodec.payloadIfServing(
-          policy: eventInfoServePolicy,
-          eventCode: rpid.eventCode,
-          eventDisplayName: eventInfoDisplayName,
-          b004EventCodeHash: rpid.getEventCodeHash()
-        ) else {
-          peripheral.respond(to: request, withResult: .readNotPermitted)
-          return
-        }
-        eventInfoSnapshots[id] = EventInfoSnapshot(
-          value: value,
-          lastRequest: now
-        )
-      } catch {
+      guard let value = eventInfoValueForRead() else {
         peripheral.respond(to: request, withResult: .readNotPermitted)
         return
       }
+      eventInfoSnapshots[id] = EventInfoSnapshot(
+        value: value,
+        lastRequest: now
+      )
     }
     guard var snapshot = eventInfoSnapshots[id] else {
       peripheral.respond(to: request, withResult: .invalidOffset)

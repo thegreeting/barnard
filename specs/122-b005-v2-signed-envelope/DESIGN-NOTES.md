@@ -271,6 +271,154 @@ boundary only delivers them.
 
 ---
 
+## 0.2c The relay driving boundary — what the engine owns and what the host owns
+
+*Recorded when the relay driving landed (barnard#187, ships in 0.8.0).*
+
+0.7.0 shipped `BarnardParticipantRelay` as a pure type with its own unit tests and no caller.
+Nothing fed it observations and nothing served what it elected, so spec 134 existed as a library
+and not as a behaviour. 0.8.0 closes both ends.
+
+**Feed side.** Every receipt the §0.2b path produces is offered to a relay instance owned by the
+engine. Two filters sit in front of it, and they are deliberately at different layers:
+
+1. *The engine's filter.* Only a `radioSelfVerified` receipt is offered. An `unverified` container
+   is never handed to the relay at all, and v1 hint traffic cannot reach it because the `0x03`
+   dispatch in §0.2b happens first — a v1 payload never becomes a receipt.
+2. *The relay's filter.* The relay's `BarnardRelayVerifier` is host-supplied, and only a
+   `registryVerified` answer unlocks re-broadcast. This is spec 134 step 3: relay requires the
+   authoritative on-chain definition, which the SDK cannot reach. The relaxation in the 2026-09-05
+   erratum applies to candidate *display*, not to relay.
+
+So "verified enough to relay" is strictly stronger than "verified enough to show", and the two
+gates live in the two places that can actually answer them. A host that configures no verifier gets
+an inert relay: observations are dropped and nothing is ever served.
+
+**An observation observes; it does not decide.** The receive path calls `observe` and stops there.
+Lease decisions run in `advanceParticipantRelay`, which the host calls at its scheduled wake-up and
+which the B005 read path calls before answering. The first cut of this work called `advance` after
+every observation, which is wrong in a way that only shows up under load: `advance` takes at most
+one decision per 30-second epoch, so deciding on arrival pins each epoch's decision to the density
+observed at that epoch's *first* arrival. A burst of neighbours arriving milliseconds later cannot
+then suppress a device that has already elected itself, which is precisely the suppression the
+density controller exists to perform. Spec 134 says decisions happen "at each 30-second decision
+boundary", and `observe` already does everything an observation is responsible for — dedup, lowest-hop
+retention, handle retention, selection. The engine test that sweeps the enter numerators is what
+caught this: at r = 1 and r = 2 every seed entered, because r was still 0 when the decision ran.
+
+**Because an observation does not decide, something else must.** `advance` is the only path that
+consults the lease clock: `observe` never looks at `activeUntil`. Deciding on arrival was wrong, but
+removing it opened a second hole in the other direction — a device that elected itself and then
+stopped hearing anything had nothing left to end its lease, so it served an expired 30-second lease
+for as long as it stayed powered. Nothing in the receive path can fix that, because the failure mode
+*is* the absence of receive traffic.
+
+So the engine drives the relay itself while one is configured: a main-queue `DispatchSourceTimer` on
+Swift, a re-arming `Handler.postDelayed` under the existing lock on Kotlin, both torn down wherever
+the relay is. The public `advanceParticipantRelay` stays, and a host may still call it; the
+documented contract is at least the decision-boundary cadence, and more often is harmless because
+the relay takes at most one election decision per epoch.
+
+The tick is 5 seconds, not 30. A lease starts when a contention delay ends, so it expires at an
+arbitrary offset inside an epoch rather than on the boundary; a 30-second tick would let a lease run
+for up to twice its length before anything noticed, which is the same violation with a smaller
+constant. Five seconds bounds the overshoot to one tick. It does not make the device decide more
+often, and it starts no radio work, so the cost is a wake-up while relaying and nothing when idle.
+
+The real timer cannot be awaited deterministically against an injected clock, so each platform tests
+the two halves separately: that the tick is armed as soon as a relay exists and disarmed on
+teardown, and that its callback alone — never the host-facing advance — expires the lease.
+
+**Serve side.** The relay's output sink caches the container it elected. The B005 read at offset
+zero now goes through one internal chooser on each platform, which advances the relay first and
+then picks:
+
+1. this device's own event-info value from `BarnardEventInfoCodec.payloadIfServing`, if it has one;
+2. otherwise the relayed container;
+3. otherwise the read is refused, exactly as before.
+
+**Precedence is a spec gap we closed conservatively.** Spec 134 never says what a device that is
+both a direct source and an elected relay should serve. Own-value-first is the reading that cannot
+lose information: an organizer-designated device demoting itself to a forwarder would remove a
+hop-zero source from the neighbourhood, while the reverse only delays a relayed copy that other
+participants can still carry. The spec's one-payload-at-a-time rule rules out serving both.
+
+**Precedence is enforced at the front, not at the read.** An earlier cut applied the rule only in
+the chooser above, which left the relay free to observe, elect, win a lease and report
+`isRelayServing == true` on a device whose peers were all being served the v1 own value. The flag
+and the decision events would then have described a broadcast that was never on the wire — and
+beid#367 reads that flag. So a device that has an own value to serve now refuses to feed the relay
+at all, and tears down any lease it already held with reason `own_value_precedence`. The
+alternative, keeping the lease and redefining the flag to mean "holds a lease" rather than "is on
+the wire", was rejected: it makes the honest reading of the flag the one a consumer is least likely
+to take, and it leaves density handles accumulating for a broadcast this device cannot perform.
+
+Note what this precedence does *not* do: the own value is still the v1 `BarnardEventInfoCodec`
+payload, so an organizer-designated device does not yet serve a hop-zero v2 container. That is a
+pre-existing gap in the emission side, untouched here.
+
+**Lifecycle.** `hostStop()` is terminal on the relay type, so the engine drops the instance rather
+than reusing it and builds a fresh one on the next observation. Stopping Scan or Advertise tears it
+down, which is what spec 134's "Resume MUST recheck every guard instead of restoring an old lease"
+requires. The engine keeps the injected verifier, clock, ENIN source and seed across a teardown;
+only the state machine is discarded.
+
+**Decisions on the host surface.** A new `BarnardEvent` case (`relayDecision` / `RelayDecision`)
+carries the decision, the payload digest, the served hop and a reason. The digest is the envelope
+identity — a value already derivable from bytes on the wire — chosen over the peer handle
+deliberately: §b.5 forbids exposing handles, `r`, or the election secret, and a decision event is a
+public surface.
+
+The event carries no peer identifier. A draft version included the peripheral whose observation
+woke the relay, which reads like provenance and is not: it names neither the envelope's source nor
+the device that elected, only whichever peer happened to arrive last. Now that decisions run on
+`advance` rather than on arrival, there is often no triggering peer at all. Digest-only is the
+honest surface.
+
+The relay's sink protocol reports only start and stop, so `broadcast`, `keep` and `stop` are
+derived at the engine. A lease renewal in the state machine is a stop followed by a fresh election,
+with the relay genuinely not serving in between, so there is no observable "keep" distinct from
+re-election; the engine names a start whose digest matches the last served one a `keep`, and it is
+always preceded by a `stop`. The reason string comes from the engine's own call site
+(`elected`, `renewed`, `lease_ended`, `host_stop`, `definition_invalidated`) rather than from the
+relay, which carries none.
+
+**Testability.** The relay's clock and ENIN source are injectable through
+`configureParticipantRelay` and default to the engine's uptime clock and its own B004 ENIN. Without
+that, no test could step a 30-second decision epoch or a 15-second contention delay, and the
+relay's ENIN would disagree with the one the receive-path seam is given — the conformance envelopes
+sit at ENIN ~6.0e6, so every observation would be rejected as out of window.
+
+The relay methods are main-queue-only on Swift, documented on each. That is the engine's existing
+convention rather than a new constraint: the relay state machine is not thread-safe and the Swift
+engine serializes nothing. The Kotlin engine holds `eventInfoStateLock` across every relay call
+because its GATT server callbacks genuinely arrive on binder threads, and it collects decisions
+inside the lock to emit them after release, so a host callback can never re-enter the engine while
+the lock is held.
+
+The shared vectors are driven through the engine seam on both platforms, but not byte-for-byte:
+`relay-hop-dedup.txt` carries a four-byte placeholder envelope that the real verifier rejects, so
+it can never become a receipt. The engine tests assert the relationships that file encodes —
+container layout, served hop = observed minimum + 1, no output at hop two, the 32-handle cap, the
+12-ENIN lifetime — using the signed conformance envelope from `b005-envelope-v2.txt`, and check
+separately that the placeholder containers agree with the same container encoder the relay serves
+through. A test on each platform pins that consequence directly: the vector's hop-zero container
+fed through the receive seam reaches neither the relay verifier nor the host.
+
+The density vectors are swept across a fixed set of seed materials rather than asserted at one
+seed. `pEnter = (k - r) / k` is a probability, so at r = 1 and r = 2 a single seed's outcome is a
+coin flip, and asserting one fixed outcome pins whatever that seed drew. The sweep asserts what is
+actually determined: every seed enters at r = 0 (`pEnter = 1`), no seed enters at r >= k
+(`pEnter = 0`), and both branches occur in between. The keep numerators are exercised separately,
+by forcing entry at r = 0 and populating the handles one millisecond before the lease boundary.
+
+**What this work does not touch.** Overflow-marker expiry is barnard#181 and is unchanged here: the
+33rd handle in a window still marks saturation without being retained, and the marker still ages
+out on its own T. The relay driving added no new handle-cap behaviour and inherits whatever #181
+settles.
+
+---
+
 ## (a) The #122 envelope v2 wire format and verification path
 
 ### a.1 Container (fixed by spec 134, restated for makers)

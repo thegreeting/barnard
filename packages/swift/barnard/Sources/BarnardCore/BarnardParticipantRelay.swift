@@ -90,8 +90,12 @@ public final class BarnardParticipantRelay {
     candidate.validFrom <= current && current < candidate.expires
   }
 
-  /// Runs expiry, selection, contention, and lease decisions. Hosts call this
-  /// after Scan observations and at their next scheduled policy wake-up.
+  /// Runs expiry, selection, contention, and lease decisions.
+  ///
+  /// This is the only entry point that consults the lease clock, so it must be
+  /// driven on a timer, not only after observations: a device that stops
+  /// hearing anything would otherwise keep serving a lease that has already
+  /// run out. `observe` deliberately takes no lease decision.
   public func advance() {
     guard !stopped else { return }
     let now = clock.relayNowMilliseconds()

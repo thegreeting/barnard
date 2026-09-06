@@ -44,6 +44,10 @@ final class BarnardExampleModel: ObservableObject {
       // signature checks out, not that the event is registered, so it must not
       // be presented to a user as "verified".
       append("event_info_envelope_v2: receiverState=\(envelope.receiverState) bytes=\(envelope.rawContainer.count)")
+    case .relayDecision(let decision):
+      // Spec 134 density control. The digest is a local dedup key, not an
+      // identifier of a person or a device.
+      append("relay_decision: \(decision.decision.rawValue) hop=\(decision.hop) reason=\(decision.reason)")
     }
   }
 
