@@ -74,6 +74,15 @@ jobs:
         # only (none present in Sources/Tests here; `precondition()` is
         # unaffected), so numeric-correctness test behavior is unchanged.
         run: xcodebuild -scheme Barnard-Package -destination "id=${{ steps.destination.outputs.udid }}" SWIFT_OPTIMIZATION_LEVEL=-O test
+      - name: swift build + swift test (native macOS, whole package)
+        # The package also supports macOS, where the whole graph
+        # (including the Barnard target's CoreBluetooth code) builds and tests
+        # natively with no simulator. -Xswiftc -O for the same reason the
+        # xcodebuild step above passes SWIFT_OPTIMIZATION_LEVEL=-O: the default
+        # -Onone build makes the BigInteger-based secp256k1 EC math ~9x slower.
+        run: |
+          swift build
+          swift test -Xswiftc -O
       - name: Root and inner Swift package manifest drift guard
         working-directory: .
         run: ./scripts/check-swift-package-manifest-mirror.sh
