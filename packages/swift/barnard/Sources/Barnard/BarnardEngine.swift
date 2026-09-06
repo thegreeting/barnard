@@ -210,14 +210,16 @@ public struct BarnardRelayDecisionEvent {
 /// this layer is served byte for byte even if its signature or its validity
 /// window would fail a peer's `BarnardB005EnvelopeV2.verify`.
 public enum BarnardOwnEnvelopeV2Error: Error, Equatable {
-  /// Outside `5...512` bytes. Four bytes of header plus a non-empty envelope.
-  case invalidContainerLength
-  /// Byte 0 is not `BarnardB005EnvelopeV2.formatVersion` (`0x03`).
-  case unsupportedFormatVersion
-  /// Byte 1 is not zero. The device's own value is a hop-zero source.
+  /// Byte 1 is not zero. The device's own value is a hop-zero source, and a
+  /// container already carrying a hop is a relayed copy, not ours to serve.
+  ///
+  /// This is the one guard the shared structural validator does not supply:
+  /// `BarnardB005EnvelopeV2.validateStructure` allows any hop within the spec
+  /// 134 limit, because a receiver must accept relayed copies.
   case nonZeroHopCount
-  /// The big-endian length at bytes 2-3 disagrees with the byte count.
-  case envelopeLengthMismatch
+  /// The container failed a clock-independent structural check that
+  /// `BarnardB005EnvelopeV2.verify` applies to any container it is given.
+  case malformedContainer(BarnardB005StructureError)
 }
 
 public enum BarnardEvent {
@@ -659,6 +661,8 @@ public final class BarnardEngine: NSObject {
   /// payload needs that policy because it carries no signature of its own;
   /// supplying a signed container is itself the decision to serve.
   ///
+  /// Call on the main queue, like every other engine method.
+  ///
   /// - Throws: `BarnardOwnEnvelopeV2Error` when the bytes are not such a
   ///   container. Nothing is stored and any previous container stays in place.
   public func configureOwnEventInfoEnvelopeV2(container: Data?) throws {
@@ -669,36 +673,34 @@ public final class BarnardEngine: NSObject {
     }
     try Self.validateOwnEnvelopeV2Container(container)
     ownEnvelopeV2Container = container
-    emitDebug(level: "info", name: "own_envelope_v2", data: [
-      "supplied": true, "bytes": container.count,
-    ])
     // This device now has an own value, so it can no longer put a relayed
     // container on the wire. Drop any lease here rather than at the next
     // `advanceParticipantRelay`, so `isRelayServing` never claims a broadcast
-    // that has already stopped being possible.
+    // that has already stopped being possible. The teardown's relay decisions
+    // are emitted before this call's own debug event, so a host reading the
+    // debug stream sees the lease end and then the container take over.
     tearDownParticipantRelay(reason: "own_value_precedence")
+    emitDebug(level: "info", name: "own_envelope_v2", data: [
+      "supplied": true, "bytes": container.count,
+    ])
   }
 
   /// The container this device serves as its own hop-zero value, if any.
   public var ownEventInfoEnvelopeV2: Data? { ownEnvelopeV2Container }
 
-  /// Structural gate for a host-supplied own container: the first two guards
-  /// of `BarnardB005EnvelopeV2.verify` plus a hop-zero requirement. `verify`
-  /// itself is deliberately not called — it needs the current ENIN and would
-  /// reject a container issued ahead of its own validity window.
+  /// Structural gate for a host-supplied own container: every clock-independent
+  /// guard `BarnardB005EnvelopeV2.verify` applies, plus a hop-zero requirement.
+  ///
+  /// `verify` itself is deliberately not called — it needs the current ENIN and
+  /// would reject a container provisioned ahead of its own validity window — but
+  /// the structural half of it is shared rather than restated, so this gate
+  /// cannot drift into accepting a shape a receiver would refuse.
   internal static func validateOwnEnvelopeV2Container(_ container: Data) throws {
     let bytes = [UInt8](container)
-    guard bytes.count >= 5, bytes.count <= 512 else {
-      throw BarnardOwnEnvelopeV2Error.invalidContainerLength
-    }
-    guard bytes[0] == BarnardB005EnvelopeV2.formatVersion else {
-      throw BarnardOwnEnvelopeV2Error.unsupportedFormatVersion
+    if let structure = BarnardB005EnvelopeV2.validateStructure(container: bytes) {
+      throw BarnardOwnEnvelopeV2Error.malformedContainer(structure)
     }
     guard bytes[1] == 0 else { throw BarnardOwnEnvelopeV2Error.nonZeroHopCount }
-    let envelopeLength = Int(bytes[2]) << 8 | Int(bytes[3])
-    guard envelopeLength <= 508, envelopeLength == bytes.count - 4 else {
-      throw BarnardOwnEnvelopeV2Error.envelopeLengthMismatch
-    }
   }
 
   /// Enables spec 134 participant relay, or disables it when `verifier` is nil.

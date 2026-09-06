@@ -431,12 +431,27 @@ authority-direct or delegate mode. The SDK holds no authority key and has no reg
 so it cannot sign and must not appear to: it does not re-encode, does not re-sign, and never
 assigns `REGISTRY_VERIFIED`. Passing `nil`/`null` clears the container.
 
-**The gate is structural, and deliberately so.** The engine checks four things — 5 to 512
-bytes, byte 0 equal to `0x03`, byte 1 equal to zero, and the big-endian envelope length at
-bytes 2-3 agreeing with the byte count. Those are the first guards of
-`BarnardB005EnvelopeV2.verify` plus a hop-zero requirement.
+**The gate is structural, and deliberately so.** It applies every clock-independent guard the
+verifier applies: container size, `0x03`, the hop limit, the declared envelope length, envelope
+version 1, the 199-byte envelope floor, the key count, the field layout and total-size
+arithmetic, `joinMode`, a non-zero `eninSeconds`, the event-code-hash TLV type and the
+display-name length. On top of those it requires hop zero, which the verifier does not: a
+receiver must accept relayed copies, while a device's own value is a hop-zero source by
+definition.
 
-`verify` itself is *not* called, which is the one non-obvious choice here. It needs the current
+**Those guards live in one shared entry point, not two copies.** `validateStructure` on
+`BarnardB005EnvelopeV2` holds them, `verify` calls it before doing anything else, and the
+engine's gate calls it too. The alternative — restating a subset in the engine — is what an
+earlier revision did, and it had already drifted: the engine accepted an envelope of any
+version and any size, so a container a receiver would refuse structurally could still be put on
+the air. One entry point makes that class of drift impossible rather than merely fixed.
+
+What `validateStructure` deliberately excludes is anything needing an input beyond the bytes:
+the validity window and the certificate window need the current ENIN, the key set and both
+signatures need recovery, and the display name needs the platform's normaliser. Passing it
+therefore says a container is well shaped, never that it is authentic.
+
+`verify` in full is *not* called, which is the one non-obvious choice here. It needs the current
 ENIN and rejects anything outside `[validFromEnin, relayExpiresAtEnin)`, so calling it would
 refuse a container the host obtained ahead of the event it is for — a normal thing to do,
 since an organizer device is provisioned before doors open. Rejecting at configure time would

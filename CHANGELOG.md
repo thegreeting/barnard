@@ -86,7 +86,11 @@ driver draws the drafted summary from (see `RELEASING.md`).
   either authority-direct or delegate mode. The SDK does not sign, re-encode,
   or re-verify it, and it never assigns `REGISTRY_VERIFIED`: it checks only
   that the bytes are a well-formed `0x03` container at hop zero, then serves
-  them byte for byte. A rejected container throws
+  them byte for byte. That shape check is
+  `BarnardB005EnvelopeV2.validateStructure`, a new public entry point holding
+  every clock-independent structural guard, which `verify` now calls first as
+  well — so a host cannot serve a container a receiver would refuse on shape.
+  A rejected container throws
   `BarnardOwnEnvelopeV2Error` (Swift) / `BarnardOwnEnvelopeV2Exception`
   (Kotlin) and leaves any previously supplied one in place.
   `ownEventInfoEnvelopeV2` reads back what is set. (barnard#189)

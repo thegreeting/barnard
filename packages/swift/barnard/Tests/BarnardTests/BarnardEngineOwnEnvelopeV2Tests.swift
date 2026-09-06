@@ -53,7 +53,30 @@ final class BarnardEngineOwnEnvelopeV2Tests: XCTestCase {
     let engine = BarnardEngine()
 
     XCTAssertThrowsError(try engine.configureOwnEventInfoEnvelopeV2(container: container)) {
-      XCTAssertEqual($0 as? BarnardOwnEnvelopeV2Error, .unsupportedFormatVersion)
+      XCTAssertEqual($0 as? BarnardOwnEnvelopeV2Error, .malformedContainer(.formatVersion))
+    }
+    XCTAssertNil(engine.ownEventInfoEnvelopeV2)
+  }
+
+  func testUnsupportedEnvelopeVersionIsRejected() throws {
+    var container = try vectorContainer()
+    container[4] = 0x02  // envelope version, the first byte after the container header
+    let engine = BarnardEngine()
+
+    XCTAssertThrowsError(try engine.configureOwnEventInfoEnvelopeV2(container: container)) {
+      XCTAssertEqual($0 as? BarnardOwnEnvelopeV2Error, .malformedContainer(.envelopeVersion))
+    }
+    XCTAssertNil(engine.ownEventInfoEnvelopeV2)
+  }
+
+  func testAnEnvelopeBelowTheMinimumSizeIsRejected() throws {
+    // A container whose declared length agrees with its byte count, so only
+    // the 199-byte envelope floor can reject it.
+    let short = Data([3, 0, 0, 8]) + Data(repeating: 1, count: 8)
+    let engine = BarnardEngine()
+
+    XCTAssertThrowsError(try engine.configureOwnEventInfoEnvelopeV2(container: short)) {
+      XCTAssertEqual($0 as? BarnardOwnEnvelopeV2Error, .malformedContainer(.envelopeTooSmall))
     }
     XCTAssertNil(engine.ownEventInfoEnvelopeV2)
   }
@@ -62,13 +85,37 @@ final class BarnardEngineOwnEnvelopeV2Tests: XCTestCase {
     let engine = BarnardEngine()
     let container = try vectorContainer()
 
-    XCTAssertThrowsError(try engine.configureOwnEventInfoEnvelopeV2(container: Data([3, 0, 0, 0]))) {
-      XCTAssertEqual($0 as? BarnardOwnEnvelopeV2Error, .invalidContainerLength)
+    XCTAssertThrowsError(try engine.configureOwnEventInfoEnvelopeV2(container: Data([3, 0, 0]))) {
+      XCTAssertEqual($0 as? BarnardOwnEnvelopeV2Error, .malformedContainer(.containerLength))
     }
     XCTAssertThrowsError(
       try engine.configureOwnEventInfoEnvelopeV2(container: container + Data([0]))
     ) {
-      XCTAssertEqual($0 as? BarnardOwnEnvelopeV2Error, .envelopeLengthMismatch)
+      XCTAssertEqual($0 as? BarnardOwnEnvelopeV2Error, .malformedContainer(.envelopeLength))
+    }
+  }
+
+  func testTheGateRefusesEveryShapeTheVerifierRefuses() throws {
+    // The point of sharing one structural entry point: whatever the gate
+    // accepts, a receiver's verify would also accept structurally. Sweep the
+    // mutations that break structure and assert both agree.
+    let engine = BarnardEngine()
+    let base = try vectorContainer()
+    // Byte 0 format version, byte 2 the envelope length's high byte (the
+    // vector's envelope is 256, so the low byte alone is a no-op), byte 4
+    // envelope version.
+    for (index, value) in [(0, UInt8(2)), (2, 0), (4, 2)] {
+      var mutated = base
+      mutated[index] = value
+      XCTAssertThrowsError(try engine.configureOwnEventInfoEnvelopeV2(container: mutated),
+                           "byte \(index) should not pass the gate")
+      XCTAssertNil(
+        BarnardB005EnvelopeV2.verify(
+          container: [UInt8](mutated), currentEnin: vectorEnin,
+          nameValidator: BarnardB005NativeDisplayNameNormalizer()
+        ),
+        "byte \(index) should not pass verify either"
+      )
     }
   }
 
@@ -186,7 +233,10 @@ final class BarnardEngineOwnEnvelopeV2Tests: XCTestCase {
     XCTAssertEqual(relayed[1], 1, "the relayed copy sits one hop out")
 
     var own = try vectorContainer()
-    own[4] ^= 0x01  // distinguishable bytes; the gate does not inspect the envelope
+    // Flip a registrar byte: distinguishable from the relayed copy, and one of
+    // the fields the structural gate does not constrain, so the tightened gate
+    // still accepts it.
+    own[5] ^= 0x01
     try engine.configureOwnEventInfoEnvelopeV2(container: own)
 
     XCTAssertEqual(engine.eventInfoValueForRead(), own)

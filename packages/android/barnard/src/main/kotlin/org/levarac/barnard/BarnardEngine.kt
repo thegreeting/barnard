@@ -423,6 +423,9 @@ public class BarnardEngine(private val appContext: Context) {
             tearDownParticipantRelayLocked("own_value_precedence")
             drainRelayDecisionsLocked()
         }
+        // The teardown's relay decisions are emitted before this call's own
+        // debug event, so a host reading the debug stream sees the lease end
+        // and then the container take over.
         emitRelayDecisions(decisions)
         emitDebug("info", "own_envelope_v2", mapOf("supplied" to true, "bytes" to copy.size))
     }
@@ -432,24 +435,20 @@ public class BarnardEngine(private val appContext: Context) {
         get() = synchronized(eventInfoStateLock) { ownEnvelopeV2Container?.copyOf() }
 
     /**
-     * Structural gate for a host-supplied own container: the first two guards
-     * of [BarnardB005EnvelopeV2.verify] plus a hop-zero requirement. `verify`
-     * itself is deliberately not called — it needs the current ENIN and would
-     * reject a container issued ahead of its own validity window.
+     * Structural gate for a host-supplied own container: every clock-independent
+     * guard [BarnardB005EnvelopeV2.verify] applies, plus a hop-zero requirement.
+     *
+     * `verify` itself is deliberately not called — it needs the current ENIN and
+     * would reject a container provisioned ahead of its own validity window —
+     * but the structural half of it is shared rather than restated, so this gate
+     * cannot drift into accepting a shape a receiver would refuse.
      */
     private fun validateOwnEnvelopeV2Container(container: ByteArray) {
-        if (container.size < 5 || container.size > 512) {
-            throw BarnardOwnEnvelopeV2Exception(BarnardOwnEnvelopeV2Error.INVALID_CONTAINER_LENGTH)
-        }
-        if (container[0].toInt() and 0xFF != BarnardB005EnvelopeV2.FORMAT_VERSION) {
-            throw BarnardOwnEnvelopeV2Exception(BarnardOwnEnvelopeV2Error.UNSUPPORTED_FORMAT_VERSION)
+        BarnardB005EnvelopeV2.validateStructure(container)?.let {
+            throw BarnardOwnEnvelopeV2Exception(BarnardOwnEnvelopeV2Error.MalformedContainer(it))
         }
         if (container[1].toInt() and 0xFF != 0) {
-            throw BarnardOwnEnvelopeV2Exception(BarnardOwnEnvelopeV2Error.NON_ZERO_HOP_COUNT)
-        }
-        val envelopeLength = (container[2].toInt() and 0xFF) shl 8 or (container[3].toInt() and 0xFF)
-        if (envelopeLength > 508 || envelopeLength != container.size - 4) {
-            throw BarnardOwnEnvelopeV2Exception(BarnardOwnEnvelopeV2Error.ENVELOPE_LENGTH_MISMATCH)
+            throw BarnardOwnEnvelopeV2Exception(BarnardOwnEnvelopeV2Error.NonZeroHopCount)
         }
     }
 

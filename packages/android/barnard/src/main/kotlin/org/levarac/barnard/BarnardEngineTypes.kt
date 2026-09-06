@@ -252,24 +252,30 @@ public class BarnardRelayDecisionEvent(
  * this layer is served byte for byte even if its signature or its validity
  * window would fail a peer's [BarnardB005EnvelopeV2.verify].
  */
-public enum class BarnardOwnEnvelopeV2Error {
-    /** Outside `5..512` bytes. Four bytes of header plus a non-empty envelope. */
-    INVALID_CONTAINER_LENGTH,
+public sealed class BarnardOwnEnvelopeV2Error {
+    /**
+     * Byte 1 is not zero. The device's own value is a hop-zero source, and a
+     * container already carrying a hop is a relayed copy, not ours to serve.
+     *
+     * This is the one guard the shared structural validator does not supply:
+     * [BarnardB005EnvelopeV2.validateStructure] allows any hop within the spec
+     * 134 limit, because a receiver must accept relayed copies.
+     */
+    public object NonZeroHopCount : BarnardOwnEnvelopeV2Error()
 
-    /** Byte 0 is not [BarnardB005EnvelopeV2.FORMAT_VERSION] (`0x03`). */
-    UNSUPPORTED_FORMAT_VERSION,
-
-    /** Byte 1 is not zero. The device's own value is a hop-zero source. */
-    NON_ZERO_HOP_COUNT,
-
-    /** The big-endian length at bytes 2-3 disagrees with the byte count. */
-    ENVELOPE_LENGTH_MISMATCH,
+    /**
+     * The container failed a clock-independent structural check that
+     * [BarnardB005EnvelopeV2.verify] applies to any container it is given.
+     */
+    public data class MalformedContainer(
+        val structure: BarnardB005StructureError,
+    ) : BarnardOwnEnvelopeV2Error()
 }
 
 /** Thrown by `BarnardEngine.configureOwnEventInfoEnvelopeV2`. */
 public class BarnardOwnEnvelopeV2Exception(
     public val reason: BarnardOwnEnvelopeV2Error,
-) : IllegalArgumentException(reason.name)
+) : IllegalArgumentException(reason.toString())
 
 public sealed class BarnardEvent {
     public data class State(val state: BarnardState) : BarnardEvent()

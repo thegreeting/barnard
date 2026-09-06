@@ -63,7 +63,7 @@ class BarnardEngineOwnEnvelopeV2Test {
         val engine = newEngine()
 
         assertEquals(
-            BarnardOwnEnvelopeV2Error.NON_ZERO_HOP_COUNT,
+            BarnardOwnEnvelopeV2Error.NonZeroHopCount,
             rejection(engine, container),
         )
         assertNull(engine.ownEventInfoEnvelopeV2)
@@ -77,8 +77,38 @@ class BarnardEngineOwnEnvelopeV2Test {
         val engine = newEngine()
 
         assertEquals(
-            BarnardOwnEnvelopeV2Error.UNSUPPORTED_FORMAT_VERSION,
+            BarnardOwnEnvelopeV2Error.MalformedContainer(BarnardB005StructureError.FORMAT_VERSION),
             rejection(engine, container),
+        )
+        assertNull(engine.ownEventInfoEnvelopeV2)
+    }
+
+    @Test
+    fun unsupportedEnvelopeVersionIsRejected() {
+        val container = vectorContainer()
+        // Envelope version, the first byte after the container header.
+        container[4] = 0x02
+        val engine = newEngine()
+
+        assertEquals(
+            BarnardOwnEnvelopeV2Error.MalformedContainer(BarnardB005StructureError.ENVELOPE_VERSION),
+            rejection(engine, container),
+        )
+        assertNull(engine.ownEventInfoEnvelopeV2)
+    }
+
+    @Test
+    fun anEnvelopeBelowTheMinimumSizeIsRejected() {
+        // A container whose declared length agrees with its byte count, so only
+        // the 199-byte envelope floor can reject it.
+        val short = byteArrayOf(3, 0, 0, 8) + ByteArray(8) { 1 }
+        val engine = newEngine()
+
+        assertEquals(
+            BarnardOwnEnvelopeV2Error.MalformedContainer(
+                BarnardB005StructureError.ENVELOPE_TOO_SMALL,
+            ),
+            rejection(engine, short),
         )
         assertNull(engine.ownEventInfoEnvelopeV2)
     }
@@ -88,13 +118,37 @@ class BarnardEngineOwnEnvelopeV2Test {
         val engine = newEngine()
 
         assertEquals(
-            BarnardOwnEnvelopeV2Error.INVALID_CONTAINER_LENGTH,
-            rejection(engine, byteArrayOf(3, 0, 0, 0)),
+            BarnardOwnEnvelopeV2Error.MalformedContainer(
+                BarnardB005StructureError.CONTAINER_LENGTH,
+            ),
+            rejection(engine, byteArrayOf(3, 0, 0)),
         )
         assertEquals(
-            BarnardOwnEnvelopeV2Error.ENVELOPE_LENGTH_MISMATCH,
+            BarnardOwnEnvelopeV2Error.MalformedContainer(
+                BarnardB005StructureError.ENVELOPE_LENGTH,
+            ),
             rejection(engine, vectorContainer() + byteArrayOf(0)),
         )
+    }
+
+    @Test
+    fun theGateRefusesEveryShapeTheVerifierRefuses() {
+        // The point of sharing one structural entry point: whatever the gate
+        // accepts, a receiver's verify would also accept structurally. Sweep
+        // the mutations that break structure and assert both agree.
+        val engine = newEngine()
+        // Byte 0 format version, byte 2 the envelope length's high byte
+        // (the vector's envelope is 256, so the low byte alone is a no-op),
+        // byte 4 envelope version.
+        for ((index, value) in listOf(0 to 2, 2 to 0, 4 to 2)) {
+            val mutated = vectorContainer()
+            mutated[index] = value.toByte()
+            assertNotNull("byte $index should not pass the gate", rejection(engine, mutated))
+            assertNull(
+                "byte $index should not pass verify either",
+                BarnardB005EnvelopeV2.verify(mutated, vectorEnin),
+            )
+        }
     }
 
     @Test
@@ -232,7 +286,10 @@ class BarnardEngineOwnEnvelopeV2Test {
         assertEquals("the relayed copy sits one hop out", 1, relayed!![1].toInt())
 
         val own = vectorContainer()
-        own[4] = (own[4].toInt() xor 0x01).toByte()
+        // Flip a registrar byte: distinguishable from the relayed copy, and one
+        // of the fields the structural gate does not constrain, so the
+        // tightened gate still accepts it.
+        own[5] = (own[5].toInt() xor 0x01).toByte()
         engine.configureOwnEventInfoEnvelopeV2(own)
 
         assertArrayEquals(own, engine.eventInfoValueForRead())
