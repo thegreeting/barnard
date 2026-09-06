@@ -328,6 +328,7 @@ public final class BarnardEngine: NSObject {
   private var relayEninSource: (any BarnardRelayEninSource)?
   private let relaySink = BarnardEngineRelaySink()
   private var participantRelay: BarnardParticipantRelay?
+  private var relayTimer: DispatchSourceTimer?
   private var relayServedContainer: Data?
   private var relayLastServedDigest: Data?
   /// Set around each relay call so the sink can name the cause of a start or
@@ -483,6 +484,10 @@ public final class BarnardEngine: NSObject {
 
   deinit {
     NotificationCenter.default.removeObserver(self)
+    // A resumed DispatchSourceTimer traps if it is released without being
+    // cancelled, so this is required rather than tidiness.
+    relayTimer?.cancel()
+    relayTimer = nil
   }
 
   private func ensureCentralManager() -> CBCentralManager {
@@ -653,8 +658,16 @@ public final class BarnardEngine: NSObject {
   }
 
   /// Runs the relay's expiry, selection, contention, and lease decisions.
-  /// Hosts call this at their scheduled policy wake-up; the engine also calls
-  /// it on every observation and before answering a B005 read.
+  ///
+  /// This is the only path that consults the lease clock. Observations do not
+  /// take lease decisions, so it must be driven on a timer: a device that
+  /// stops hearing anything would otherwise keep serving a lease that has
+  /// already run out. The engine drives it internally while a relay is
+  /// configured, and also calls it before answering a B005 read. A host that
+  /// wants tighter control may call it as well, at least at the decision
+  /// boundary cadence of `BarnardEngine.relayDecisionBoundaryMilliseconds`;
+  /// calling it more often is harmless because the relay takes at most one
+  /// election decision per 30-second epoch.
   ///
   /// Call on the main queue, like every other engine method: the relay state
   /// machine is not thread-safe and the engine serializes nothing for you.
@@ -688,6 +701,43 @@ public final class BarnardEngine: NSObject {
 
   private func isServingOwnEventInfo() -> Bool { ownEventInfoPayload() != nil }
 
+  /// Spec 134's decision boundary: `T` = 30 seconds.
+  public static let relayDecisionBoundaryMilliseconds = 30_000
+
+  /// How often the engine's internal timer runs the relay forward.
+  ///
+  /// Deliberately shorter than the decision boundary. A lease starts when a
+  /// contention delay ends, so it expires at an arbitrary offset within an
+  /// epoch rather than on the boundary; ticking only every 30 seconds would
+  /// let a lease be served for up to twice its length before anything noticed.
+  /// This bounds that overshoot to one tick. It does not make the device
+  /// decide more often -- the relay still takes at most one election decision
+  /// per epoch -- and it starts no radio work, so the cost is a timer wake-up
+  /// while relaying and nothing at all when the relay is idle.
+  internal static let relayTimerIntervalMilliseconds = 5_000
+
+  /// Test seam: the engine's own timer callback, distinct from a host calling
+  /// `advanceParticipantRelay`.
+  internal func relayTimerDidFire() { advanceParticipantRelay() }
+
+  /// Test seam: whether the self-protecting timer is currently armed.
+  internal var relayTimerIsScheduled: Bool { relayTimer != nil }
+
+  private func startRelayTimerIfNeeded() {
+    guard relayTimer == nil else { return }
+    let timer = DispatchSource.makeTimerSource(queue: .main)
+    let interval = DispatchTimeInterval.milliseconds(Self.relayTimerIntervalMilliseconds)
+    timer.schedule(deadline: .now() + interval, repeating: interval)
+    timer.setEventHandler { [weak self] in self?.relayTimerDidFire() }
+    relayTimer = timer
+    timer.resume()
+  }
+
+  private func stopRelayTimer() {
+    relayTimer?.cancel()
+    relayTimer = nil
+  }
+
   private func ensureParticipantRelay() -> BarnardParticipantRelay? {
     guard let verifier = relayVerifier else { return nil }
     if let existing = participantRelay { return existing }
@@ -700,6 +750,7 @@ public final class BarnardEngine: NSObject {
       randomnessSeedMaterial: relaySeedMaterial
     )
     participantRelay = relay
+    startRelayTimerIfNeeded()
     return relay
   }
 
@@ -707,6 +758,7 @@ public final class BarnardEngine: NSObject {
   /// envelope. `hostStop()` is terminal, so the instance is dropped and a
   /// later observation builds a fresh one that rechecks every guard.
   private func tearDownParticipantRelay(reason: String) {
+    stopRelayTimer()
     guard let relay = participantRelay else { return }
     relayDecisionReason = reason
     relay.hostStop()

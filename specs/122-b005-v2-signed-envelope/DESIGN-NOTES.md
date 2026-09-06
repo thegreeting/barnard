@@ -306,6 +306,29 @@ boundary", and `observe` already does everything an observation is responsible f
 retention, handle retention, selection. The engine test that sweeps the enter numerators is what
 caught this: at r = 1 and r = 2 every seed entered, because r was still 0 when the decision ran.
 
+**Because an observation does not decide, something else must.** `advance` is the only path that
+consults the lease clock: `observe` never looks at `activeUntil`. Deciding on arrival was wrong, but
+removing it opened a second hole in the other direction — a device that elected itself and then
+stopped hearing anything had nothing left to end its lease, so it served an expired 30-second lease
+for as long as it stayed powered. Nothing in the receive path can fix that, because the failure mode
+*is* the absence of receive traffic.
+
+So the engine drives the relay itself while one is configured: a main-queue `DispatchSourceTimer` on
+Swift, a re-arming `Handler.postDelayed` under the existing lock on Kotlin, both torn down wherever
+the relay is. The public `advanceParticipantRelay` stays, and a host may still call it; the
+documented contract is at least the decision-boundary cadence, and more often is harmless because
+the relay takes at most one election decision per epoch.
+
+The tick is 5 seconds, not 30. A lease starts when a contention delay ends, so it expires at an
+arbitrary offset inside an epoch rather than on the boundary; a 30-second tick would let a lease run
+for up to twice its length before anything noticed, which is the same violation with a smaller
+constant. Five seconds bounds the overshoot to one tick. It does not make the device decide more
+often, and it starts no radio work, so the cost is a wake-up while relaying and nothing when idle.
+
+The real timer cannot be awaited deterministically against an injected clock, so each platform tests
+the two halves separately: that the tick is armed as soon as a relay exists and disarmed on
+teardown, and that its callback alone — never the host-facing advance — expires the lease.
+
 **Serve side.** The relay's output sink caches the container it elected. The B005 read at offset
 zero now goes through one internal chooser on each platform, which advances the relay first and
 then picks:

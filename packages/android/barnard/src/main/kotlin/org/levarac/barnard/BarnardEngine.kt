@@ -76,9 +76,29 @@ internal fun isRuntimePermissionRequestBlocked(
  * [onRequestPermissionsResult] for [requestPermissions] to resolve.
  */
 public class BarnardEngine(private val appContext: Context) {
-    private companion object {
-        const val permissionRequestCode = 0xB4D
-        const val permissionRequestedKeyPrefix = "permission_requested:"
+    public companion object {
+        // Kept private: these were never part of the public surface, and the
+        // companion is only public so the relay cadence constants below can be.
+        private const val permissionRequestCode = 0xB4D
+        private const val permissionRequestedKeyPrefix = "permission_requested:"
+
+        /** Spec 134's decision boundary: `T` = 30 seconds. */
+        public const val RELAY_DECISION_BOUNDARY_MS: Long = 30_000L
+
+        /**
+         * How often the engine's internal tick runs the relay forward.
+         *
+         * Deliberately shorter than the decision boundary. A lease starts when
+         * a contention delay ends, so it expires at an arbitrary offset within
+         * an epoch rather than on the boundary; ticking only every 30 seconds
+         * would let a lease be served for up to twice its length before
+         * anything noticed. This bounds that overshoot to one tick. It does
+         * not make the device decide more often -- the relay still takes at
+         * most one election decision per epoch -- and it starts no radio work,
+         * so the cost is a timer wake-up while relaying and nothing at all
+         * when the relay is idle.
+         */
+        internal const val RELAY_TIMER_INTERVAL_MS: Long = 5_000L
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -148,6 +168,7 @@ public class BarnardEngine(private val appContext: Context) {
     private var relayClock: BarnardRelayMonotonicClock? = null
     private var relayEninSource: BarnardRelayEninSource? = null
     private var participantRelay: BarnardParticipantRelay? = null
+    private var relayTickRunnable: Runnable? = null
     private var relayServedContainer: ByteArray? = null
     private var relayLastServedDigest: ByteArray? = null
     /**
@@ -396,12 +417,50 @@ public class BarnardEngine(private val appContext: Context) {
 
     /**
      * Runs the relay's expiry, selection, contention, and lease decisions.
-     * Hosts call this at their scheduled policy wake-up; the engine also calls
-     * it on every observation and before answering a B005 read.
+     *
+     * This is the only path that consults the lease clock. Observations do not
+     * take lease decisions, so it must be driven on a timer: a device that
+     * stops hearing anything would otherwise keep serving a lease that has
+     * already run out. The engine drives it internally while a relay is
+     * configured, and also calls it before answering a B005 read. A host that
+     * wants tighter control may call it as well, at least at the decision
+     * boundary cadence of [RELAY_DECISION_BOUNDARY_MS]; calling it more often
+     * is harmless because the relay takes at most one election decision per
+     * 30-second epoch.
      */
     public fun advanceParticipantRelay() {
         val decisions = synchronized(eventInfoStateLock) { advanceParticipantRelayLocked() }
         emitRelayDecisions(decisions)
+    }
+
+    /**
+     * Test seam: the engine's own timer callback, distinct from a host calling
+     * [advanceParticipantRelay].
+     */
+    internal fun relayTimerDidFire() {
+        val decisions = synchronized(eventInfoStateLock) {
+            // Re-arm first so a teardown inside the advance below wins and
+            // leaves no orphan tick queued.
+            if (participantRelay != null) scheduleRelayTickLocked()
+            advanceParticipantRelayLocked()
+        }
+        emitRelayDecisions(decisions)
+    }
+
+    /** Test seam: whether the self-protecting tick is currently armed. */
+    internal val relayTimerIsScheduled: Boolean
+        get() = synchronized(eventInfoStateLock) { relayTickRunnable != null }
+
+    private fun scheduleRelayTickLocked() {
+        cancelRelayTickLocked()
+        val tick = Runnable { relayTimerDidFire() }
+        relayTickRunnable = tick
+        mainHandler.postDelayed(tick, RELAY_TIMER_INTERVAL_MS)
+    }
+
+    private fun cancelRelayTickLocked() {
+        relayTickRunnable?.let { mainHandler.removeCallbacks(it) }
+        relayTickRunnable = null
     }
 
     /** True while this device is re-broadcasting a relayed envelope. */
@@ -447,6 +506,7 @@ public class BarnardEngine(private val appContext: Context) {
             randomnessSeedMaterial = relaySeedMaterial,
         )
         participantRelay = relay
+        scheduleRelayTickLocked()
         return relay
     }
 
@@ -456,6 +516,7 @@ public class BarnardEngine(private val appContext: Context) {
      * later observation builds a fresh one that rechecks every guard.
      */
     private fun tearDownParticipantRelayLocked(reason: String) {
+        cancelRelayTickLocked()
         val relay = participantRelay ?: return
         relayDecisionReason = reason
         relay.hostStop()

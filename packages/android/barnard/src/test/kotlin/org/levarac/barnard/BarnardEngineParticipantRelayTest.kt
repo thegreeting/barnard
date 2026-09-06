@@ -181,6 +181,52 @@ class BarnardEngineParticipantRelayTest {
         assertEquals(1, tail[1].hop)
     }
 
+    /**
+     * A lease must end on time even if the host never calls
+     * [BarnardEngine.advanceParticipantRelay] and no peer ever reads B005.
+     *
+     * Observations do not take lease decisions, so before the engine drove the
+     * relay itself a device that stopped hearing anything went on serving an
+     * expired lease indefinitely. Robolectric's main looper would run the real
+     * posted tick, but it would run it against the injected clock's frozen
+     * time, so this asserts the two halves separately: that the tick is armed
+     * as soon as a relay exists, and that its callback expires the lease. Only
+     * [BarnardEngine.relayTimerDidFire] is invoked here, never the
+     * host-facing advance.
+     */
+    @Test
+    fun leaseExpiresOnTheEnginesOwnTimerWithoutAnyHostCall() {
+        val h = harness()
+        feed(h, vectorContainer(0), 1)
+        assertTrue("an existing relay must arm the engine's tick", h.engine.relayTimerIsScheduled)
+
+        // Reach a serving lease using only the engine's own timer callback.
+        h.engine.relayTimerDidFire()
+        h.clock.now += 15_001
+        h.engine.relayTimerDidFire()
+        assertTrue(h.engine.isRelayServing)
+
+        // Nothing further is observed, no host advance, no B005 read. The
+        // lease must still end once its 30 seconds are up.
+        h.clock.now += 30_000
+        h.engine.relayTimerDidFire()
+
+        val stop = decisions(h).last { it.decision == BarnardRelayDecision.STOP }
+        assertEquals("lease_ended", stop.reason)
+
+        // The tick interval must actually bound the overshoot it claims to.
+        assertTrue(BarnardEngine.RELAY_TIMER_INTERVAL_MS < BarnardEngine.RELAY_DECISION_BOUNDARY_MS)
+    }
+
+    @Test
+    fun stoppingScanDisarmsTheEnginesTimer() {
+        val h = harness()
+        feed(h, vectorContainer(0), 1)
+        assertTrue(h.engine.relayTimerIsScheduled)
+        h.engine.stopScan()
+        assertFalse("a torn-down relay must leave no tick queued", h.engine.relayTimerIsScheduled)
+    }
+
     // 2. Hop at the limit is never re-broadcast.
 
     @Test

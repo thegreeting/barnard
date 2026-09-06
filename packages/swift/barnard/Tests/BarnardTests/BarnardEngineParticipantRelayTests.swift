@@ -168,6 +168,47 @@ final class BarnardEngineParticipantRelayTests: XCTestCase {
     XCTAssertEqual(tail[1].hop, 1)
   }
 
+  /// A lease must end on time even if the host never calls
+  /// `advanceParticipantRelay` and no peer ever reads B005.
+  ///
+  /// Observations do not take lease decisions, so before the engine drove the
+  /// relay itself a device that stopped hearing anything went on serving an
+  /// expired lease indefinitely. The real `DispatchSourceTimer` cannot be
+  /// awaited deterministically in a unit test with an injected clock, so this
+  /// asserts the two halves separately: that the timer is armed as soon as a
+  /// relay exists, and that its callback expires the lease. Only
+  /// `relayTimerDidFire` is invoked here -- never the host-facing advance.
+  func testLeaseExpiresOnTheEnginesOwnTimerWithoutAnyHostCall() throws {
+    let h = harness()
+    feed(h, try vectorContainer(hop: 0), peer: 1)
+    XCTAssertTrue(h.engine.relayTimerIsScheduled, "an existing relay must arm the engine's timer")
+
+    // Reach a serving lease using only the engine's own timer callback.
+    h.engine.relayTimerDidFire()
+    h.clock.now += 15_001
+    h.engine.relayTimerDidFire()
+    XCTAssertTrue(h.engine.isRelayServing)
+
+    // Nothing further is observed, no host advance, no B005 read. The lease
+    // must still end once its 30 seconds are up.
+    h.clock.now += 30_000
+    h.engine.relayTimerDidFire()
+
+    let stop = try XCTUnwrap(decisions(h).last { $0.decision == .stop })
+    XCTAssertEqual(stop.reason, "lease_ended")
+
+    // The tick interval must actually bound the overshoot it claims to.
+    XCTAssertLessThan(BarnardEngine.relayTimerIntervalMilliseconds, BarnardEngine.relayDecisionBoundaryMilliseconds)
+  }
+
+  func testStoppingScanDisarmsTheEnginesTimer() throws {
+    let h = harness()
+    feed(h, try vectorContainer(hop: 0), peer: 1)
+    XCTAssertTrue(h.engine.relayTimerIsScheduled)
+    h.engine.stopScan()
+    XCTAssertFalse(h.engine.relayTimerIsScheduled, "a torn-down relay must leave no timer running")
+  }
+
   // MARK: - 2. Hop at the limit is never re-broadcast
 
   func testHopAtLimitIsNeverRebroadcast() throws {

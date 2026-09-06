@@ -70,6 +70,11 @@ driver draws the drafted summary from (see `RELEASING.md`).
   an observation. Spec 134 decides at 30-second boundaries, and deciding on
   arrival would fix each epoch's decision to the density seen at that epoch's
   first arrival, defeating suppression. (barnard#187)
+- The engine drives the relay forward on its own timer while one is
+  configured, so a lease ends on time even if the host never calls
+  `advanceParticipantRelay()` and no peer ever reads B005. The host-callable
+  method remains; hosts that call it themselves should do so at least at the
+  30-second decision-boundary cadence. (barnard#187)
 - Overflow-marker expiry (barnard#181) is untouched by this change: the
   33rd handle in a density window still saturates without being retained, and
   the relay driving inherits whatever #181 settles. (barnard#187)
