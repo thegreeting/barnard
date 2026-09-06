@@ -68,7 +68,7 @@ final class BarnardEngineParticipantRelayTests: XCTestCase {
     var events: () -> [BarnardEvent]
   }
 
-  private func harness(configureRelay: Bool = true) -> Harness {
+  private func harness(configureRelay: Bool = true, seed: [UInt8] = [7, 8, 9]) -> Harness {
     let engine = BarnardEngine()
     let clock = Clock(), enin = Enin(), verifier = RegistryVerifier(), joined = JoinedEvent()
     let box = EventBox()
@@ -77,7 +77,7 @@ final class BarnardEngineParticipantRelayTests: XCTestCase {
       engine.configureParticipantRelay(
         verifier: verifier,
         joinedEventProvider: joined,
-        randomnessSeedMaterial: [7, 8, 9],
+        randomnessSeedMaterial: seed,
         clock: clock,
         eninSource: enin
       )
@@ -217,6 +217,26 @@ final class BarnardEngineParticipantRelayTests: XCTestCase {
 
   // MARK: - 5. Shared vectors through the engine seam
 
+  /// The placeholder envelope in `relay-hop-dedup.txt` is not signed, so the
+  /// engine's real verifier rejects it and it never becomes a receipt. This
+  /// pins that as a property of the seam rather than leaving it as a remark in
+  /// the file's own comment: feeding the vector's hop-zero container through
+  /// the receive path must reach neither the relay nor the host.
+  func testHopDedupVectorContainerNeverReachesTheRelayAtTheEngineSeam() throws {
+    let hop = try vectors("relay-hop-dedup")
+    let container = try XCTUnwrap(hexBytes(hop["hop_zero_container"]!))
+    XCTAssertEqual(container.first, 0x03, "the vector must still be dispatched as a v2 container")
+
+    let h = harness()
+    feed(h, container, peer: 1)
+    finishContention(h)
+
+    XCTAssertEqual(h.verifier.invocations, 0, "an unsigned placeholder must never reach the relay verifier")
+    XCTAssertFalse(h.engine.isRelayServing)
+    XCTAssertNil(h.engine.relayContainerForServing())
+    XCTAssertTrue(decisions(h).isEmpty)
+  }
+
   func testRelayHopDedupVectorsThroughTheEngineSeam() throws {
     let hop = try vectors("relay-hop-dedup")
     XCTAssertEqual(hop["format_version"], "03")
@@ -255,29 +275,93 @@ final class BarnardEngineParticipantRelayTests: XCTestCase {
                    try XCTUnwrap(BarnardB005EnvelopeV2.encodeContainer(relayHopCount: 1, signedEnvelope: signedEnvelope)))
   }
 
-  func testDensityDecisionVectorsThroughTheEngineSeam() throws {
+  /// Enter decisions, driven by the vector file's numerators.
+  ///
+  /// `pEnter = (k - r) / k` is a probability, so a single seed's outcome at
+  /// r = 1 or 2 is a coin flip and asserting one fixed outcome would pin
+  /// whatever that seed happened to draw. The election draw is a pure function
+  /// of (seed material, digest, epoch), so sweeping a fixed set of seeds makes
+  /// the *distribution* deterministic without reimplementing the draw here:
+  ///
+  /// - `r = 0` has `pEnter = 1`, so every seed must enter;
+  /// - `r >= k` has `pEnter = 0`, so no seed may enter;
+  /// - `0 < r < k` must show both branches across the sweep, which is what
+  ///   proves the suppression path is reachable at all.
+  func testDensityEnterDecisionsAcrossSeedsMatchTheVectorNumerators() throws {
     let density = try vectors("density-decisions")
     let k = Int(density["k"]!)!
     let contentionMax = Int64(density["contention_max_ms"]!)!
     XCTAssertEqual(k, 3)
     XCTAssertEqual(Int64(density["window_ms"]!)!, 30_000)
 
+    let seeds: [[UInt8]] = (0..<24).map { [UInt8($0), 0x5A, 0xA5] }
+
     for r in 0...4 {
       let enterNumerator = Int(density["r\(r)_enter_numerator"]!)!
-      XCTAssertEqual(enterNumerator, max(0, k - r))
+      XCTAssertEqual(enterNumerator, max(0, k - r), "r=\(r) numerator disagrees with (k - r)")
+
+      var entered = 0
+      for seed in seeds {
+        let h = harness(seed: seed)
+        // Establish the candidate from a direct source (hop 0): hop-zero peers
+        // do not count toward r.
+        feed(h, try vectorContainer(hop: 0), peer: 1)
+        // r distinct hop-positive relay sources inside the density window.
+        for i in 0..<r { feed(h, try vectorContainer(hop: 1), peer: UInt8(100 + i)) }
+
+        h.engine.advanceParticipantRelay()
+        h.clock.now += contentionMax + 1
+        h.engine.advanceParticipantRelay()
+
+        if h.engine.isRelayServing { entered += 1 }
+      }
+
+      switch enterNumerator {
+      case k:
+        XCTAssertEqual(entered, seeds.count, "r=\(r): pEnter = 1, every seed must enter")
+      case 0:
+        XCTAssertEqual(entered, 0, "r=\(r): pEnter = 0, no seed may enter")
+      default:
+        XCTAssertGreaterThan(entered, 0, "r=\(r): no seed entered, the enter branch is unreachable")
+        XCTAssertLessThan(entered, seeds.count, "r=\(r): every seed entered, the suppress branch is unreachable")
+      }
+    }
+  }
+
+  /// Keep decisions, driven by the vector file's keep numerators.
+  ///
+  /// Entry only ever happens at `r < k`, so r = 3 and 4 cannot be reached by
+  /// entering with a live r. Entry is forced at r = 0 (where `pEnter = 1`
+  /// makes it seed-independent), then the r handles are populated one
+  /// millisecond before the lease boundary so they are still inside the
+  /// 30-second window at the instant the keep decision runs.
+  func testDensityKeepDecisionsThroughTheEngineSeam() throws {
+    let density = try vectors("density-decisions")
+    let k = Int(density["k"]!)!
+    let window = Int64(density["window_ms"]!)!
+    let contentionMax = Int64(density["contention_max_ms"]!)!
+
+    for r in 0...(k + 1) {
+      let keepNumerator = Int(density["r\(r)_keep_numerator"]!)!
+      XCTAssertEqual(keepNumerator, k, "r=\(r): pKeep = min(1, k/(r+1)) always has numerator k")
 
       let h = harness()
-      // Establish the candidate from a direct source (hop 0): hop-zero peers
-      // do not count toward r.
       feed(h, try vectorContainer(hop: 0), peer: 1)
-      // r distinct hop-positive relay sources inside the density window.
-      for i in 0..<r { feed(h, try vectorContainer(hop: 1), peer: UInt8(100 + i)) }
+      h.engine.advanceParticipantRelay()
+      h.clock.now += contentionMax + 1
+      h.engine.advanceParticipantRelay()
+      XCTAssertTrue(h.engine.isRelayServing, "r=\(r): entry at r=0 must be guaranteed")
 
+      h.clock.now += window - 1
+      for i in 0..<r { feed(h, try vectorContainer(hop: 1), peer: UInt8(150 + i)) }
+      h.clock.now += 1  // now == activeUntil: the keep decision runs at this exact r
       h.engine.advanceParticipantRelay()
       h.clock.now += contentionMax + 1
       h.engine.advanceParticipantRelay()
 
-      XCTAssertEqual(h.engine.isRelayServing, enterNumerator > 0, "r=\(r) enter decision mismatch")
+      // pKeep picks a keep candidate whenever the numerator is positive, but
+      // Advertise only restarts if r < k at the end of the contention delay.
+      XCTAssertEqual(h.engine.isRelayServing, keepNumerator > 0 && r < k, "r=\(r) keep decision mismatch")
     }
   }
 
@@ -310,8 +394,37 @@ final class BarnardEngineParticipantRelayTests: XCTestCase {
       organizerDesignated: true, eventActiveForDiscovery: true, eventDisplayName: "Own Event"
     )
     let own = try XCTUnwrap(h.engine.eventInfoValueForRead())
-    XCTAssertNotEqual(own, h.engine.relayContainerForServing())
     XCTAssertEqual(own.first, 0x01, "the own value is the unchanged v1 event-info payload")
+
+    // Precedence is not a read-time tie-break: taking the wire away from the
+    // relay must also end its lease, or `isRelayServing` and the decision
+    // events would describe a broadcast no peer can observe.
+    XCTAssertFalse(h.engine.isRelayServing)
+    XCTAssertNil(h.engine.relayContainerForServing())
+    let stop = try XCTUnwrap(decisions(h).last)
+    XCTAssertEqual(stop.decision, .stop)
+    XCTAssertEqual(stop.reason, "own_value_precedence")
+  }
+
+  /// The mirror of the case above: a device already serving its own value must
+  /// never enter election in the first place, so no lease is ever taken that
+  /// the read path would then have to override.
+  func testOwnValueDeviceNeverEntersElection() throws {
+    let h = harness()
+    defer { h.engine.leaveEvent() }
+    h.engine.joinEvent("BARNARD-RELAY-TEST")
+    try h.engine.configureEventInfoServing(
+      organizerDesignated: true, eventActiveForDiscovery: true, eventDisplayName: "Own Event"
+    )
+
+    feed(h, try vectorContainer(hop: 0), peer: 1)
+    finishContention(h)
+
+    XCTAssertEqual(h.verifier.invocations, 0, "an own-value device must not offer observations to the relay")
+    XCTAssertFalse(h.engine.isRelayServing)
+    XCTAssertNil(h.engine.relayContainerForServing())
+    XCTAssertTrue(decisions(h).allSatisfy { $0.decision == .stop })
+    XCTAssertEqual(h.engine.eventInfoValueForRead()?.first, 0x01)
   }
 
   func testStoppingScanClearsTheRelayLease() throws {

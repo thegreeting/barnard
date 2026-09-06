@@ -80,7 +80,7 @@ class BarnardEngineParticipantRelayTest {
         val events: MutableList<BarnardEvent>,
     )
 
-    private fun harness(configureRelay: Boolean = true): Harness {
+    private fun harness(configureRelay: Boolean = true, seed: ByteArray = byteArrayOf(7, 8, 9)): Harness {
         val context: Context = ApplicationProvider.getApplicationContext()
         val engine = BarnardEngine(context)
         val clock = Clock()
@@ -92,7 +92,7 @@ class BarnardEngineParticipantRelayTest {
             engine.configureParticipantRelay(
                 verifier = verifier,
                 joinedEventProvider = BarnardRelayJoinedEventProvider { null },
-                randomnessSeedMaterial = byteArrayOf(7, 8, 9),
+                randomnessSeedMaterial = seed,
                 clock = clock,
                 eninSource = enin,
             )
@@ -239,6 +239,28 @@ class BarnardEngineParticipantRelayTest {
 
     // 5. Shared vectors through the engine seam.
 
+    /**
+     * The placeholder envelope in `relay-hop-dedup.txt` is not signed, so the
+     * engine's real verifier rejects it and it never becomes a receipt. This
+     * pins that as a property of the seam rather than leaving it as a remark
+     * in the file's own comment: feeding the vector's hop-zero container
+     * through the receive path must reach neither the relay nor the host.
+     */
+    @Test
+    fun hopDedupVectorContainerNeverReachesTheRelayAtTheEngineSeam() {
+        val container = hex(vectors("relay-hop-dedup").getValue("hop_zero_container"))
+        assertEquals("the vector must still be dispatched as a v2 container", 0x03, container[0].toInt())
+
+        val h = harness()
+        feed(h, container, 1)
+        finishContention(h)
+
+        assertEquals("an unsigned placeholder must never reach the relay verifier", 0, h.verifier.invocations)
+        assertFalse(h.engine.isRelayServing)
+        assertNull(h.engine.relayContainerForServing())
+        assertTrue(decisions(h).isEmpty())
+    }
+
     @Test
     fun relayHopDedupVectorsThroughTheEngineSeam() {
         val hopVectors = vectors("relay-hop-dedup")
@@ -278,30 +300,99 @@ class BarnardEngineParticipantRelayTest {
         )
     }
 
+    /**
+     * Enter decisions, driven by the vector file's numerators.
+     *
+     * `pEnter = (k - r) / k` is a probability, so a single seed's outcome at
+     * r = 1 or 2 is a coin flip and asserting one fixed outcome would pin
+     * whatever that seed happened to draw. The election draw is a pure
+     * function of (seed material, digest, epoch), so sweeping a fixed set of
+     * seeds makes the *distribution* deterministic without reimplementing the
+     * draw here:
+     *
+     * - `r = 0` has `pEnter = 1`, so every seed must enter;
+     * - `r >= k` has `pEnter = 0`, so no seed may enter;
+     * - `0 < r < k` must show both branches across the sweep, which is what
+     *   proves the suppression path is reachable at all.
+     */
     @Test
-    fun densityDecisionVectorsThroughTheEngineSeam() {
+    fun densityEnterDecisionsAcrossSeedsMatchTheVectorNumerators() {
         val density = vectors("density-decisions")
         val k = density.getValue("k").toInt()
         val contentionMax = density.getValue("contention_max_ms").toLong()
         assertEquals(3, k)
         assertEquals(30_000L, density.getValue("window_ms").toLong())
 
+        val seeds = (0 until 24).map { byteArrayOf(it.toByte(), 0x5A, 0xA5.toByte()) }
+
         for (r in 0..4) {
             val enterNumerator = density.getValue("r${r}_enter_numerator").toInt()
-            assertEquals(maxOf(0, k - r), enterNumerator)
+            assertEquals("r=$r numerator disagrees with (k - r)", maxOf(0, k - r), enterNumerator)
+
+            var entered = 0
+            for (seed in seeds) {
+                val h = harness(seed = seed)
+                // Establish the candidate from a direct source (hop 0):
+                // hop-zero peers do not count toward r.
+                feed(h, vectorContainer(0), 1)
+                // r distinct hop-positive relay sources inside the window.
+                for (i in 0 until r) feed(h, vectorContainer(1), 100 + i)
+
+                h.engine.advanceParticipantRelay()
+                h.clock.now += contentionMax + 1
+                h.engine.advanceParticipantRelay()
+
+                if (h.engine.isRelayServing) entered++
+            }
+
+            when (enterNumerator) {
+                k -> assertEquals("r=$r: pEnter = 1, every seed must enter", seeds.size, entered)
+                0 -> assertEquals("r=$r: pEnter = 0, no seed may enter", 0, entered)
+                else -> {
+                    assertTrue("r=$r: no seed entered, the enter branch is unreachable", entered > 0)
+                    assertTrue("r=$r: every seed entered, the suppress branch is unreachable", entered < seeds.size)
+                }
+            }
+        }
+    }
+
+    /**
+     * Keep decisions, driven by the vector file's keep numerators.
+     *
+     * Entry only ever happens at `r < k`, so r = 3 and 4 cannot be reached by
+     * entering with a live r. Entry is forced at r = 0 (where `pEnter = 1`
+     * makes it seed-independent), then the r handles are populated one
+     * millisecond before the lease boundary so they are still inside the
+     * 30-second window at the instant the keep decision runs.
+     */
+    @Test
+    fun densityKeepDecisionsThroughTheEngineSeam() {
+        val density = vectors("density-decisions")
+        val k = density.getValue("k").toInt()
+        val window = density.getValue("window_ms").toLong()
+        val contentionMax = density.getValue("contention_max_ms").toLong()
+
+        for (r in 0..(k + 1)) {
+            val keepNumerator = density.getValue("r${r}_keep_numerator").toInt()
+            assertEquals("r=$r: pKeep = min(1, k/(r+1)) always has numerator k", k, keepNumerator)
 
             val h = harness()
-            // Establish the candidate from a direct source (hop 0): hop-zero
-            // peers do not count toward r.
             feed(h, vectorContainer(0), 1)
-            // r distinct hop-positive relay sources inside the density window.
-            for (i in 0 until r) feed(h, vectorContainer(1), 100 + i)
+            h.engine.advanceParticipantRelay()
+            h.clock.now += contentionMax + 1
+            h.engine.advanceParticipantRelay()
+            assertTrue("r=$r: entry at r=0 must be guaranteed", h.engine.isRelayServing)
 
+            h.clock.now += window - 1
+            for (i in 0 until r) feed(h, vectorContainer(1), 150 + i)
+            h.clock.now += 1 // now == activeUntil: the keep decision runs at this exact r
             h.engine.advanceParticipantRelay()
             h.clock.now += contentionMax + 1
             h.engine.advanceParticipantRelay()
 
-            assertEquals("r=$r enter decision mismatch", enterNumerator > 0, h.engine.isRelayServing)
+            // pKeep picks a keep candidate whenever the numerator is positive,
+            // but Advertise only restarts if r < k at the end of the delay.
+            assertEquals("r=$r keep decision mismatch", keepNumerator > 0 && r < k, h.engine.isRelayServing)
         }
     }
 
@@ -329,7 +420,6 @@ class BarnardEngineParticipantRelayTest {
 
         // Once this device serves its own event-info value, that wins.
         h.engine.joinEvent("BARNARD-RELAY-TEST")
-        // The joined event code is persisted, so restore anonymous mode below.
         h.engine.configureEventInfoServing(
             organizerDesignated = true,
             eventActiveForDiscovery = true,
@@ -337,8 +427,42 @@ class BarnardEngineParticipantRelayTest {
         )
         val own = h.engine.eventInfoValueForRead()
         assertNotNull(own)
-        assertFalse(own!!.contentEquals(h.engine.relayContainerForServing()))
-        assertEquals("the own value is the unchanged v1 event-info payload", 0x01, own[0].toInt())
+        assertEquals("the own value is the unchanged v1 event-info payload", 0x01, own!![0].toInt())
+
+        // Precedence is not a read-time tie-break: taking the wire away from
+        // the relay must also end its lease, or isRelayServing and the
+        // decision events would describe a broadcast no peer can observe.
+        assertFalse(h.engine.isRelayServing)
+        assertNull(h.engine.relayContainerForServing())
+        val stop = decisions(h).last()
+        assertEquals(BarnardRelayDecision.STOP, stop.decision)
+        assertEquals("own_value_precedence", stop.reason)
+        h.engine.leaveEvent()
+    }
+
+    /**
+     * The mirror of the case above: a device already serving its own value
+     * must never enter election in the first place, so no lease is ever taken
+     * that the read path would then have to override.
+     */
+    @Test
+    fun ownValueDeviceNeverEntersElection() {
+        val h = harness()
+        h.engine.joinEvent("BARNARD-RELAY-TEST")
+        h.engine.configureEventInfoServing(
+            organizerDesignated = true,
+            eventActiveForDiscovery = true,
+            eventDisplayName = "Own Event",
+        )
+
+        feed(h, vectorContainer(0), 1)
+        finishContention(h)
+
+        assertEquals("an own-value device must not offer observations to the relay", 0, h.verifier.invocations)
+        assertFalse(h.engine.isRelayServing)
+        assertNull(h.engine.relayContainerForServing())
+        assertTrue(decisions(h).all { it.decision == BarnardRelayDecision.STOP })
+        assertEquals(0x01, h.engine.eventInfoValueForRead()!![0].toInt())
         h.engine.leaveEvent()
     }
 
