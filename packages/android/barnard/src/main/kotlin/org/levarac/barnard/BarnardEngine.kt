@@ -155,7 +155,6 @@ public class BarnardEngine(private val appContext: Context) {
      * stop. The relay's sink interface carries no reason of its own.
      */
     private var relayDecisionReason: String = "elected"
-    private var relayTriggerPeripheralId: String? = null
     /** Decisions produced under the lock, emitted after it is released. */
     private val relayPendingDecisions = mutableListOf<BarnardRelayDecisionEvent>()
 
@@ -173,7 +172,6 @@ public class BarnardEngine(private val appContext: Context) {
                 payloadDigest = digest,
                 hop = hop,
                 reason = reason,
-                peripheralId = relayTriggerPeripheralId,
             )
         }
 
@@ -186,7 +184,6 @@ public class BarnardEngine(private val appContext: Context) {
                 payloadDigest = relayLastServedDigest ?: ByteArray(0),
                 hop = hop,
                 reason = relayDecisionReason,
-                peripheralId = relayTriggerPeripheralId,
             )
         }
     }
@@ -412,12 +409,31 @@ public class BarnardEngine(private val appContext: Context) {
         get() = synchronized(eventInfoStateLock) { participantRelay?.isServing == true }
 
     private fun advanceParticipantRelayLocked(): List<BarnardRelayDecisionEvent> {
+        // Precedence is enforced here rather than at read time, so the relay
+        // never holds a lease this device could not actually put on the wire.
+        if (isServingOwnEventInfoLocked()) {
+            tearDownParticipantRelayLocked("own_value_precedence")
+            return drainRelayDecisionsLocked()
+        }
         val relay = participantRelay ?: return emptyList()
         relayDecisionReason = if (relay.isServing) "lease_ended" else "elected"
-        relayTriggerPeripheralId = null
         relay.advance()
         return drainRelayDecisionsLocked()
     }
+
+    /** This device's own B005 event-info value, when it has one to serve. */
+    private fun ownEventInfoPayloadLocked(): ByteArray? = try {
+        BarnardEventInfoCodec.payloadIfServing(
+            eventInfoServePolicy,
+            eventCode,
+            eventInfoDisplayName,
+            getEventCodeHash(),
+        )
+    } catch (_: IllegalArgumentException) {
+        null
+    }
+
+    private fun isServingOwnEventInfoLocked(): Boolean = ownEventInfoPayloadLocked() != null
 
     private fun ensureParticipantRelayLocked(): BarnardParticipantRelay? {
         val verifier = relayVerifier ?: return null
@@ -442,7 +458,6 @@ public class BarnardEngine(private val appContext: Context) {
     private fun tearDownParticipantRelayLocked(reason: String) {
         val relay = participantRelay ?: return
         relayDecisionReason = reason
-        relayTriggerPeripheralId = null
         relay.hostStop()
         participantRelay = null
         relayServedContainer = null
@@ -487,23 +502,16 @@ public class BarnardEngine(private val appContext: Context) {
      * reading -- a device that is itself an organizer-designated direct source
      * must keep serving hop zero rather than demote itself to a forwarder, and
      * the spec's one-payload-at-a-time rule forbids serving both.
+     *
+     * [advanceParticipantRelay] enforces the same precedence before this
+     * chooses, so a device with an own value has no lease left to fall back to.
      */
     internal fun eventInfoValueForRead(): ByteArray? {
         val decisions: List<BarnardRelayDecisionEvent>
         val value: ByteArray?
         synchronized(eventInfoStateLock) {
             decisions = advanceParticipantRelayLocked()
-            val own = try {
-                BarnardEventInfoCodec.payloadIfServing(
-                    eventInfoServePolicy,
-                    eventCode,
-                    eventInfoDisplayName,
-                    getEventCodeHash(),
-                )
-            } catch (_: IllegalArgumentException) {
-                null
-            }
-            value = own ?: relayServedContainer
+            value = ownEventInfoPayloadLocked() ?: relayServedContainer
         }
         emitRelayDecisions(decisions)
         return value
@@ -1125,13 +1133,24 @@ public class BarnardEngine(private val appContext: Context) {
         // applies step 3 (registry agreement) before any re-broadcast.
         if (receipt !is BarnardB005EnvelopeV2Receipt.RadioSelfVerified) return
         val decisions = synchronized(eventInfoStateLock) {
+            // A device serving its own event-info value cannot put a relayed
+            // container on the wire, so it does not observe, elect, or hold
+            // density state for one.
+            if (isServingOwnEventInfoLocked()) {
+                tearDownParticipantRelayLocked("own_value_precedence")
+                return@synchronized drainRelayDecisionsLocked()
+            }
             val relay = ensureParticipantRelayLocked() ?: return@synchronized emptyList()
-            relayDecisionReason = "elected"
-            relayTriggerPeripheralId = address
+            // Observe only. Spec 134 takes lease decisions "at each 30-second
+            // decision boundary", not on arrival, and `observe` already does
+            // the dedup, hop retention and selection that an observation is
+            // responsible for. Deciding here instead would fix each epoch's
+            // decision to the density observed at that epoch's *first*
+            // arrival, so a burst of neighbours arriving moments later could
+            // not suppress it. Decisions run in [advanceParticipantRelay],
+            // which the host calls at its scheduled wake-up and which the B005
+            // read path calls before answering.
             relay.observe(container, relayPeerHandle(address))
-            relayDecisionReason = if (relay.isServing) "lease_ended" else "elected"
-            relay.advance()
-            relayTriggerPeripheralId = null
             drainRelayDecisionsLocked()
         }
         emitRelayDecisions(decisions)
