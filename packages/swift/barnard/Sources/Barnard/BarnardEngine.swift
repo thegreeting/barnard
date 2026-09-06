@@ -203,6 +203,25 @@ public struct BarnardRelayDecisionEvent {
   public let reason: String
 }
 
+/// Why a host-supplied own B005 v2 container was refused.
+///
+/// The checks are structural only: the SDK never signs, re-encodes, or
+/// re-verifies what the host hands it, so a container that is well formed at
+/// this layer is served byte for byte even if its signature or its validity
+/// window would fail a peer's `BarnardB005EnvelopeV2.verify`.
+public enum BarnardOwnEnvelopeV2Error: Error, Equatable {
+  /// Byte 1 is not zero. The device's own value is a hop-zero source, and a
+  /// container already carrying a hop is a relayed copy, not ours to serve.
+  ///
+  /// This is the one guard the shared structural validator does not supply:
+  /// `BarnardB005EnvelopeV2.validateStructure` allows any hop within the spec
+  /// 134 limit, because a receiver must accept relayed copies.
+  case nonZeroHopCount
+  /// The container failed a clock-independent structural check that
+  /// `BarnardB005EnvelopeV2.verify` applies to any container it is given.
+  case malformedContainer(BarnardB005StructureError)
+}
+
 public enum BarnardEvent {
   case state(BarnardState)
   case constraint(BarnardConstraintEvent)
@@ -316,6 +335,9 @@ public final class BarnardEngine: NSObject {
     var value: Data
     var lastRequest: Date
   }
+  /// A host-supplied, host-signed hop-zero v2 container (spec 122), served in
+  /// place of the v1 payload while it is set.
+  private var ownEnvelopeV2Container: Data?
   private var eventInfoSnapshots: [UUID: EventInfoSnapshot] = [:]
   private let eventInfoRetryBudget = BarnardEventInfoRetryBudget()
 
@@ -625,6 +647,62 @@ public final class BarnardEngine: NSObject {
     eventInfoDisplayName = eventDisplayName
   }
 
+  /// Supplies the pre-encoded, pre-signed B005 v2 container (spec 122) this
+  /// device serves as its own event-info value, or clears it when `container`
+  /// is nil.
+  ///
+  /// The host builds the container with `BarnardB005EnvelopeV2.encodeContainer`
+  /// in either authority-direct or delegate mode. The SDK does not sign,
+  /// re-encode, or re-verify it, and it never assigns `REGISTRY_VERIFIED`: it
+  /// only checks that the bytes are a well-formed `0x03` container at hop zero
+  /// and then serves them byte for byte.
+  ///
+  /// A supplied container is not gated on `configureEventInfoServing`. The v1
+  /// payload needs that policy because it carries no signature of its own;
+  /// supplying a signed container is itself the decision to serve.
+  ///
+  /// Call on the main queue, like every other engine method.
+  ///
+  /// - Throws: `BarnardOwnEnvelopeV2Error` when the bytes are not such a
+  ///   container. Nothing is stored and any previous container stays in place.
+  public func configureOwnEventInfoEnvelopeV2(container: Data?) throws {
+    guard let container else {
+      ownEnvelopeV2Container = nil
+      emitDebug(level: "info", name: "own_envelope_v2", data: ["supplied": false])
+      return
+    }
+    try Self.validateOwnEnvelopeV2Container(container)
+    ownEnvelopeV2Container = container
+    // This device now has an own value, so it can no longer put a relayed
+    // container on the wire. Drop any lease here rather than at the next
+    // `advanceParticipantRelay`, so `isRelayServing` never claims a broadcast
+    // that has already stopped being possible. The teardown's relay decisions
+    // are emitted before this call's own debug event, so a host reading the
+    // debug stream sees the lease end and then the container take over.
+    tearDownParticipantRelay(reason: "own_value_precedence")
+    emitDebug(level: "info", name: "own_envelope_v2", data: [
+      "supplied": true, "bytes": container.count,
+    ])
+  }
+
+  /// The container this device serves as its own hop-zero value, if any.
+  public var ownEventInfoEnvelopeV2: Data? { ownEnvelopeV2Container }
+
+  /// Structural gate for a host-supplied own container: every clock-independent
+  /// guard `BarnardB005EnvelopeV2.verify` applies, plus a hop-zero requirement.
+  ///
+  /// `verify` itself is deliberately not called — it needs the current ENIN and
+  /// would reject a container provisioned ahead of its own validity window — but
+  /// the structural half of it is shared rather than restated, so this gate
+  /// cannot drift into accepting a shape a receiver would refuse.
+  internal static func validateOwnEnvelopeV2Container(_ container: Data) throws {
+    let bytes = [UInt8](container)
+    if let structure = BarnardB005EnvelopeV2.validateStructure(container: bytes) {
+      throw BarnardOwnEnvelopeV2Error.malformedContainer(structure)
+    }
+    guard bytes[1] == 0 else { throw BarnardOwnEnvelopeV2Error.nonZeroHopCount }
+  }
+
   /// Enables spec 134 participant relay, or disables it when `verifier` is nil.
   ///
   /// The verifier is host-supplied on purpose. Spec 134 step 3 requires the
@@ -690,8 +768,16 @@ public final class BarnardEngine: NSObject {
   public var isRelayServing: Bool { participantRelay?.isServing ?? false }
 
   /// This device's own B005 event-info value, when it has one to serve.
-  private func ownEventInfoPayload() -> Data? {
-    try? BarnardEventInfoCodec.payloadIfServing(
+  ///
+  /// Two forms, and the signed one wins: a host-supplied hop-zero v2 container
+  /// (spec 122), else the v1 `BarnardEventInfoCodec` payload. Both count as an
+  /// own value everywhere precedence is decided, including the election gate —
+  /// a device serving a signed hop-zero container of its own cannot put a
+  /// relayed one on the wire either, so it must not elect or hold density
+  /// state for one.
+  private func ownEventInfoValue() -> Data? {
+    if let ownEnvelopeV2Container { return ownEnvelopeV2Container }
+    return try? BarnardEventInfoCodec.payloadIfServing(
       policy: eventInfoServePolicy,
       eventCode: rpid.eventCode,
       eventDisplayName: eventInfoDisplayName,
@@ -699,7 +785,7 @@ public final class BarnardEngine: NSObject {
     )
   }
 
-  private func isServingOwnEventInfo() -> Bool { ownEventInfoPayload() != nil }
+  private func isServingOwnEventInfo() -> Bool { ownEventInfoValue() != nil }
 
   /// Spec 134's decision boundary: `T` = 30 seconds.
   public static let relayDecisionBoundaryMilliseconds = 30_000
@@ -807,11 +893,15 @@ public final class BarnardEngine: NSObject {
   /// must keep serving hop zero rather than demote itself to a forwarder, and
   /// the spec's one-payload-at-a-time rule forbids serving both.
   ///
+  /// The own value itself has two forms, and the signed one wins: a
+  /// host-supplied hop-zero v2 container, else the v1 `BarnardEventInfoCodec`
+  /// payload, else the relayed container, else the read is refused.
+  ///
   /// `advanceParticipantRelay` enforces the same precedence before this
   /// chooses, so a device with an own value has no lease left to fall back to.
   internal func eventInfoValueForRead() -> Data? {
     advanceParticipantRelay()
-    return ownEventInfoPayload() ?? relayServedContainer
+    return ownEventInfoValue() ?? relayServedContainer
   }
 
   public func getCurrentEventCode() -> String? {
@@ -939,6 +1029,13 @@ public final class BarnardEngine: NSObject {
 
   public func leaveEvent() {
     resetPeerDiscoveryState(reason: "leave_event")
+    // A supplied v2 container commits to one event. Leaving is the single call
+    // that unambiguously says this device is no longer part of it, so the
+    // container goes with it rather than staying on the air under a signature
+    // for an event the device has left. Joining and reconfiguring do not clear
+    // it: neither says the previous event ended, and a host that provisions a
+    // container before joining would lose it.
+    ownEnvelopeV2Container = nil
     rpid.leaveEvent()
     rebuildGattServiceIfNeeded()
     emitState(reasonCode: "leave_event")

@@ -78,3 +78,34 @@ driver draws the drafted summary from (see `RELEASING.md`).
 - Overflow-marker expiry (barnard#181) is untouched by this change: the
   33rd handle in a density window still saturates without being retained, and
   the relay driving inherits whatever #181 settles. (barnard#187)
+- `configureOwnEventInfoEnvelopeV2(container:)` (Swift) /
+  `configureOwnEventInfoEnvelopeV2(container)` (Kotlin) supplies a
+  pre-encoded, pre-signed B005 v2 container the device serves as its own
+  event-info value at hop zero, and clears it when passed `nil`/`null`. The
+  host builds the container with `BarnardB005EnvelopeV2.encodeContainer` in
+  either authority-direct or delegate mode. The SDK does not sign, re-encode,
+  or re-verify it, and it never assigns `REGISTRY_VERIFIED`: it checks only
+  that the bytes are a well-formed `0x03` container at hop zero, then serves
+  them byte for byte. That shape check is
+  `BarnardB005EnvelopeV2.validateStructure`, a new public entry point holding
+  every clock-independent structural guard, which `verify` now calls first as
+  well — so a host cannot serve a container a receiver would refuse on shape.
+  A rejected container throws
+  `BarnardOwnEnvelopeV2Error` (Swift) / `BarnardOwnEnvelopeV2Exception`
+  (Kotlin) and leaves any previously supplied one in place.
+  `ownEventInfoEnvelopeV2` reads back what is set. (barnard#189)
+- Serving precedence is now own v2 container, then the v1
+  `BarnardEventInfoCodec` payload, then a relayed container. With no v2
+  container supplied the v1 payload is served exactly as before, so existing
+  consumers see no change. A supplied container counts as an own value for the
+  relay's election gate as well as the read chooser: supplying one ends any
+  lease this device holds, with decision reason `own_value_precedence`, and
+  keeps it from observing or electing while it is set. A supplied container is
+  not gated on
+  `configureEventInfoServing`, and stopping Advertise does not clear it —
+  unlike the relay lease, it is host state the engine was handed rather than
+  engine-elected state spec 134 requires be rechecked on resume. `leaveEvent`
+  does clear it, since a container is signed for one event and leaving is the
+  one call that says this device has left it; `joinEvent` and
+  `configureEventInfoServing` leave it in place. Documented in
+  `specs/122-b005-v2-signed-envelope/DESIGN-NOTES.md` §0.2d. (barnard#189)

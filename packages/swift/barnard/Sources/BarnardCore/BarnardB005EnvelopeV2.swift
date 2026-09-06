@@ -110,9 +110,78 @@ public enum BarnardRegistryAgreement: Equatable {
   case mismatched(mismatchedFields: Set<BarnardRegistryMismatchField>)
 }
 
+/// Why a B005 v2 container failed the clock-independent structural checks.
+///
+/// These are exactly the guards that depend on nothing but the bytes: no
+/// current ENIN, no signature or key recovery, no display-name normalisation.
+/// `BarnardB005EnvelopeV2.verify` runs them first, and a host serving its own
+/// container runs them on their own, so both paths accept and reject the same
+/// shapes.
+public enum BarnardB005StructureError: Equatable {
+  /// Container outside `4...512` bytes.
+  case containerLength
+  /// Byte 0 is not `BarnardB005EnvelopeV2.formatVersion`.
+  case formatVersion
+  /// Byte 1 exceeds the spec 134 hop limit of 2.
+  case hopCount
+  /// The big-endian length at bytes 2-3 exceeds 508 or disagrees with the
+  /// byte count.
+  case envelopeLength
+  /// Envelope byte 0 is not `BarnardB005EnvelopeV2.envelopeVersion`.
+  case envelopeVersion
+  /// The envelope is shorter than the 199-byte floor its fixed fields need.
+  case envelopeTooSmall
+  /// The authority key count is outside `1...8`.
+  case keyCount
+  /// A declared length runs past the envelope, or the total size disagrees
+  /// with the sum of its parts.
+  case fieldLayout
+  /// `joinMode` is neither 0 nor 1.
+  case joinMode
+  /// `eninSeconds` is zero, which no ENIN arithmetic can use.
+  case eninSeconds
+  /// The event-code-hash TLV type byte is not 2.
+  case eventCodeHashTlvType
+  /// The display-name length is outside `1...64`.
+  case displayNameLength
+}
+
 public enum BarnardB005EnvelopeV2 {
   public static let formatVersion: UInt8 = 3
   public static let envelopeVersion: UInt8 = 1
+
+  /// Clock-independent structural validation of a container, shared by
+  /// `verify` and by any caller that must judge a container's shape without a
+  /// current ENIN, a signature check, or key recovery.
+  ///
+  /// Returns nil when the container is well formed at this layer. Passing says
+  /// nothing about authenticity: the signature, the validity window, the key
+  /// set and the display-name normalisation are all still unchecked, because
+  /// each of those needs an input this function deliberately does not take.
+  public static func validateStructure(container: [UInt8]) -> BarnardB005StructureError? {
+    guard container.count >= 4, container.count <= 512 else { return .containerLength }
+    guard container[0] == formatVersion else { return .formatVersion }
+    guard container[1] <= 2 else { return .hopCount }
+    let envelopeLength = Int(container[2]) << 8 | Int(container[3])
+    guard envelopeLength <= 508, envelopeLength == container.count - 4 else { return .envelopeLength }
+    let envelope = Array(container[4...])
+    guard envelope.count >= 199 else { return .envelopeTooSmall }
+    guard envelope[0] == envelopeVersion else { return .envelopeVersion }
+    let n = Int(envelope[73])
+    guard (1...8).contains(n) else { return .keyCount }
+    let a = 74 + 33 * n
+    guard a + 26 + 65 <= envelope.count else { return .fieldLayout }
+    guard envelope[a] <= 1 else { return .joinMode }
+    guard read16(envelope, a + 1) != 0 else { return .eninSeconds }
+    guard envelope[a + 15] == 2 else { return .eventCodeHashTlvType }
+    let nameLength = Int(envelope[a + 24])
+    guard (1...64).contains(nameLength) else { return .displayNameLength }
+    let certLengthOffset = a + 25 + nameLength
+    guard certLengthOffset < envelope.count else { return .fieldLayout }
+    let certLength = Int(envelope[certLengthOffset])
+    guard 165 + 33 * n + nameLength + certLength == envelope.count else { return .fieldLayout }
+    return nil
+  }
   private static let signatureDomain = Array("barnard-b005-event-info:v1".utf8)
 
   public static func eventKeySetBytes(_ keys: [[UInt8]]) -> [UInt8]? {
@@ -145,30 +214,27 @@ public enum BarnardB005EnvelopeV2 {
   }
 
   public static func verify(container: [UInt8], currentEnin: Int64?, nameValidator: any BarnardB005DisplayNameNormalizing, recoverer: any BarnardB005PublicKeyRecovering = BarnardB005NativeRecoverer()) -> BarnardB005VerifiedEnvelope? {
-    guard container.count <= 512, container.count >= 4, container[0] == 3, container[1] <= 2 else { return nil }
-    let envelopeLength = Int(container[2]) << 8 | Int(container[3])
-    guard envelopeLength <= 508, envelopeLength == container.count - 4, let now = currentEnin, now >= 0 else { return nil }
+    // Every clock-independent shape check lives in one place, so a host
+    // serving its own container rejects exactly what a receiver would.
+    guard validateStructure(container: container) == nil else { return nil }
+    guard let now = currentEnin, now >= 0 else { return nil }
     let envelope = Array(container[4...])
-    guard envelope.count >= 199, envelope[0] == 1 else { return nil }
     let registrar = Array(envelope[1..<21]), anchor = Array(envelope[21..<41]), nonce = Array(envelope[41..<73])
-    let n = Int(envelope[73]); guard (1...8).contains(n) else { return nil }
-    let a = 74 + 33 * n; guard a + 26 + 65 <= envelope.count else { return nil }
+    let n = Int(envelope[73])
+    let a = 74 + 33 * n
     var keys: [[UInt8]] = []
     for i in 0..<n {
       let key = Array(envelope[(74 + i * 33)..<(107 + i * 33)])
       guard recoverer.isValidCompressedKey(key), keys.last.map({ lexicographicallyLess($0, key) }) ?? true else { return nil }
       keys.append(key)
     }
-    let joinMode = envelope[a]; guard joinMode <= 1 else { return nil }
-    let eninSeconds = read16(envelope, a + 1); guard eninSeconds != 0 else { return nil }
+    let joinMode = envelope[a]
+    let eninSeconds = read16(envelope, a + 1)
     let validFrom = Int64(read32(envelope, a + 3)), validThrough = Int64(read32(envelope, a + 7)), expires = Int64(read32(envelope, a + 11))
-    guard envelope[a + 15] == 2 else { return nil }
     let codeHash = Array(envelope[(a + 16)..<(a + 24)])
-    let nameLength = Int(envelope[a + 24]); guard (1...64).contains(nameLength) else { return nil }
+    let nameLength = Int(envelope[a + 24])
     let nameStart = a + 25, certLengthOffset = nameStart + nameLength
-    guard certLengthOffset < envelope.count else { return nil }
-    let certLength = Int(envelope[certLengthOffset]), expected = 165 + 33 * n + nameLength + certLength
-    guard expected == envelope.count else { return nil }
+    let certLength = Int(envelope[certLengthOffset])
     let nameBytes = Array(envelope[nameStart..<certLengthOffset])
     guard let name = strictDisplayName(nameBytes, nameValidator: nameValidator) else { return nil }
     guard let ksDigest = keySetDigest(keys), let eventId = computeEventId(registrar: registrar, anchorOperator: anchor, nonce: nonce, keySetDigest: ksDigest) else { return nil }

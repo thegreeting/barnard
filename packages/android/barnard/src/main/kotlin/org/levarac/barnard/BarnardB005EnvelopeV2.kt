@@ -109,9 +109,96 @@ sealed class BarnardRegistryAgreement {
     data class Mismatched(val mismatchedFields: Set<BarnardRegistryMismatchField>) : BarnardRegistryAgreement()
 }
 
+/**
+ * Why a B005 v2 container failed the clock-independent structural checks.
+ *
+ * These are exactly the guards that depend on nothing but the bytes: no
+ * current ENIN, no signature or key recovery, no display-name normalisation.
+ * [BarnardB005EnvelopeV2.verify] runs them first, and a host serving its own
+ * container runs them on their own, so both paths accept and reject the same
+ * shapes.
+ */
+enum class BarnardB005StructureError {
+    /** Container outside `4..512` bytes. */
+    CONTAINER_LENGTH,
+
+    /** Byte 0 is not [BarnardB005EnvelopeV2.FORMAT_VERSION]. */
+    FORMAT_VERSION,
+
+    /** Byte 1 exceeds the spec 134 hop limit of 2. */
+    HOP_COUNT,
+
+    /** The big-endian length at bytes 2-3 exceeds 508 or disagrees with the byte count. */
+    ENVELOPE_LENGTH,
+
+    /** Envelope byte 0 is not [BarnardB005EnvelopeV2.ENVELOPE_VERSION]. */
+    ENVELOPE_VERSION,
+
+    /** The envelope is shorter than the 199-byte floor its fixed fields need. */
+    ENVELOPE_TOO_SMALL,
+
+    /** The authority key count is outside `1..8`. */
+    KEY_COUNT,
+
+    /**
+     * A declared length runs past the envelope, or the total size disagrees
+     * with the sum of its parts.
+     */
+    FIELD_LAYOUT,
+
+    /** `joinMode` is neither 0 nor 1. */
+    JOIN_MODE,
+
+    /** `eninSeconds` is zero, which no ENIN arithmetic can use. */
+    ENIN_SECONDS,
+
+    /** The event-code-hash TLV type byte is not 2. */
+    EVENT_CODE_HASH_TLV_TYPE,
+
+    /** The display-name length is outside `1..64`. */
+    DISPLAY_NAME_LENGTH,
+}
+
 object BarnardB005EnvelopeV2 {
     const val FORMAT_VERSION = 3
     const val ENVELOPE_VERSION = 1
+
+    /**
+     * Clock-independent structural validation of a container, shared by
+     * [verify] and by any caller that must judge a container's shape without a
+     * current ENIN, a signature check, or key recovery.
+     *
+     * Returns null when the container is well formed at this layer. Passing
+     * says nothing about authenticity: the signature, the validity window, the
+     * key set and the display-name normalisation are all still unchecked,
+     * because each of those needs an input this function deliberately does not
+     * take.
+     */
+    fun validateStructure(container: ByteArray): BarnardB005StructureError? {
+        if (container.size !in 4..512) return BarnardB005StructureError.CONTAINER_LENGTH
+        if (container[0].u != FORMAT_VERSION) return BarnardB005StructureError.FORMAT_VERSION
+        if (container[1].u > 2) return BarnardB005StructureError.HOP_COUNT
+        val length = container[2].u shl 8 or container[3].u
+        if (length > 508 || length != container.size - 4) return BarnardB005StructureError.ENVELOPE_LENGTH
+        val e = container.copyOfRange(4, container.size)
+        if (e.size < 199) return BarnardB005StructureError.ENVELOPE_TOO_SMALL
+        if (e[0].u != ENVELOPE_VERSION) return BarnardB005StructureError.ENVELOPE_VERSION
+        val n = e[73].u
+        if (n !in 1..8) return BarnardB005StructureError.KEY_COUNT
+        val a = 74 + 33 * n
+        if (a + 91 > e.size) return BarnardB005StructureError.FIELD_LAYOUT
+        if (e[a].u !in 0..1) return BarnardB005StructureError.JOIN_MODE
+        if (read16(e, a + 1) == 0) return BarnardB005StructureError.ENIN_SECONDS
+        if (e[a + 15].u != 2) return BarnardB005StructureError.EVENT_CODE_HASH_TLV_TYPE
+        val nameLength = e[a + 24].u
+        if (nameLength !in 1..64) return BarnardB005StructureError.DISPLAY_NAME_LENGTH
+        val certLengthOffset = a + 25 + nameLength
+        if (certLengthOffset >= e.size) return BarnardB005StructureError.FIELD_LAYOUT
+        if (e.size != 165 + 33 * n + nameLength + e[certLengthOffset].u) {
+            return BarnardB005StructureError.FIELD_LAYOUT
+        }
+        return null
+    }
     private val signatureDomain = "barnard-b005-event-info:v1".encodeToByteArray()
 
     fun keccak256(input: ByteArray): ByteArray {
@@ -143,27 +230,25 @@ object BarnardB005EnvelopeV2 {
     }
 
     fun verify(container: ByteArray, currentEnin: Long?, recoverer: BarnardB005PublicKeyRecovering = BarnardB005NativeRecoverer): BarnardB005VerifiedEnvelope? {
-        if (container.size !in 4..512 || container[0].u != 3 || container[1].u > 2 || currentEnin == null || currentEnin < 0) return null
-        val length = container[2].u shl 8 or container[3].u
-        if (length > 508 || length != container.size - 4) return null
-        val e = container.copyOfRange(4, container.size); if (e.size < 199 || e[0].u != 1) return null
+        // Every clock-independent shape check lives in one place, so a host
+        // serving its own container rejects exactly what a receiver would.
+        if (validateStructure(container) != null) return null
+        if (currentEnin == null || currentEnin < 0) return null
+        val e = container.copyOfRange(4, container.size)
         val registrar = e.copyOfRange(1, 21); val anchor = e.copyOfRange(21, 41); val nonce = e.copyOfRange(41, 73)
-        val n = e[73].u; if (n !in 1..8) return null
-        val a = 74 + 33 * n; if (a + 91 > e.size) return null
+        val n = e[73].u
+        val a = 74 + 33 * n
         val keys = mutableListOf<ByteArray>()
         repeat(n) { i ->
             val key = e.copyOfRange(74 + i * 33, 107 + i * 33)
             if (!recoverer.isValidCompressedKey(key) || (keys.lastOrNull()?.let { compare(it, key) >= 0 } == true)) return null
             keys += key
         }
-        val joinMode = e[a].u; if (joinMode !in 0..1 || read16(e, a + 1) == 0 || e[a + 15].u != 2) return null
+        val joinMode = e[a].u
         val validFrom = read32(e, a + 3); val validThrough = read32(e, a + 7); val expires = read32(e, a + 11)
         val codeHash = e.copyOfRange(a + 16, a + 24); val nameLength = e[a + 24].u
-        if (nameLength !in 1..64) return null
         val nameStart = a + 25; val certLengthOffset = nameStart + nameLength
-        if (certLengthOffset >= e.size) return null
         val certLength = e[certLengthOffset].u
-        if (e.size != 165 + 33 * n + nameLength + certLength) return null
         val nameBytes = e.copyOfRange(nameStart, certLengthOffset); val name = strictDisplayName(nameBytes) ?: return null
         val ks = keySetDigest(keys) ?: return null
         val eventId = computeEventId(registrar, anchor, nonce, ks) ?: return null

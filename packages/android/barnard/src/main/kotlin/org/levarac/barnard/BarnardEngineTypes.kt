@@ -244,6 +244,39 @@ public class BarnardRelayDecisionEvent(
     public val reason: String,
 )
 
+/**
+ * Why a host-supplied own B005 v2 container was refused.
+ *
+ * The checks are structural only: the SDK never signs, re-encodes, or
+ * re-verifies what the host hands it, so a container that is well formed at
+ * this layer is served byte for byte even if its signature or its validity
+ * window would fail a peer's [BarnardB005EnvelopeV2.verify].
+ */
+public sealed class BarnardOwnEnvelopeV2Error {
+    /**
+     * Byte 1 is not zero. The device's own value is a hop-zero source, and a
+     * container already carrying a hop is a relayed copy, not ours to serve.
+     *
+     * This is the one guard the shared structural validator does not supply:
+     * [BarnardB005EnvelopeV2.validateStructure] allows any hop within the spec
+     * 134 limit, because a receiver must accept relayed copies.
+     */
+    public object NonZeroHopCount : BarnardOwnEnvelopeV2Error()
+
+    /**
+     * The container failed a clock-independent structural check that
+     * [BarnardB005EnvelopeV2.verify] applies to any container it is given.
+     */
+    public data class MalformedContainer(
+        val structure: BarnardB005StructureError,
+    ) : BarnardOwnEnvelopeV2Error()
+}
+
+/** Thrown by `BarnardEngine.configureOwnEventInfoEnvelopeV2`. */
+public class BarnardOwnEnvelopeV2Exception(
+    public val reason: BarnardOwnEnvelopeV2Error,
+) : IllegalArgumentException(reason.toString())
+
 public sealed class BarnardEvent {
     public data class State(val state: BarnardState) : BarnardEvent()
     public data class Constraint(val constraint: BarnardConstraintEvent) : BarnardEvent()
