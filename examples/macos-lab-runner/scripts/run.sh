@@ -39,7 +39,11 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
   fi
 
   echo "[run.sh] xcodegen generate" >&2
-  xcodegen generate >>"$BUILD_LOG" 2>&1
+  if ! xcodegen generate >>"$BUILD_LOG" 2>&1; then
+    tail -20 "$BUILD_LOG" >&2 || true
+    echo "RESULT=ERROR xcodegen failed, see $BUILD_LOG"
+    exit 1
+  fi
 
   echo "[run.sh] xcodebuild build ($CONFIGURATION)" >&2
   xcodebuild_args=(

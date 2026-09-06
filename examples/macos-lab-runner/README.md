@@ -31,7 +31,7 @@ invalidates the Bluetooth grant (see below).
 | `--event-code <code>` | `BND` | Event to join. |
 | `--role advertise\|scan\|auto` | `auto` | Whether to advertise, scan, or both. |
 | `--relay on\|off` | `off` | Enable the spec 134 participant relay. |
-| `--expect-peers <n>` | `1` | Distinct peers required before the run passes. |
+| `--expect-peers <n>` | `1` | Distinct peers required before the run passes. `0` turns the run into a hold: stay on the radio for the whole timeout and pass, which is what this host does while the phones look for it. |
 | `--timeout <seconds>` | `120` | How long to run before giving up. |
 | `--log <path>` | none | Also write the JSON event lines to this file. |
 

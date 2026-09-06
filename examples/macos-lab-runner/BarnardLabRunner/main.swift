@@ -86,6 +86,13 @@ final class LabRunner {
         "missing": status.missingPermissions,
         "blocked": status.blockedPermissions,
       ])
+      // A refused grant will never become a grant during this run, so there is
+      // nothing to wait for. `notDetermined` is different: the prompt may still
+      // be answered, so that case runs to the timeout.
+      if let blocker = self.bluetoothBlocker(), CBManager.authorization != .notDetermined {
+        self.finish(.bluetoothUnavailable, "ERROR", blocker)
+        return
+      }
       self.startRadio()
     }
 
@@ -254,6 +261,13 @@ final class LabRunner {
 
   private func finishOnTimeout() {
     guard !finished else { return }
+    // `--expect-peers 0` is a hold: advertise (or scan) for the whole timeout
+    // and pass, which is what a Mac does while phones look for it. Checking the
+    // condition here rather than only on each new peer is what makes that work.
+    if foundPeers.count >= options.expectPeers {
+      finish(.pass, "PASS", "peers=\(foundPeers.count) expected=\(options.expectPeers)")
+      return
+    }
     // A timeout is only a rendezvous failure when the radio was actually
     // usable. Anything else is a harness problem the lab host has to fix, and
     // must not be reported as a failed radio test.
