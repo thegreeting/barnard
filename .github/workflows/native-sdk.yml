@@ -181,7 +181,11 @@ jobs:
       - name: Build headless macOS lab runner
         # SwiftPM only: the lab host has a Swift toolchain but no XcodeGen and
         # no Homebrew, so the runner must build without either.
-        run: swift build
+        run: swift build -c release
+      - name: Assemble and sign the app bundle
+        # Ad-hoc, since the runner has no keychain. Nothing is executed: these
+        # runners have no Bluetooth radio.
+        run: ./scripts/bundle.sh
 
   android-library:
     # Flutter-free: builds/tests packages/android/barnard directly. No

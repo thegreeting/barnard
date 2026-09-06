@@ -102,6 +102,12 @@ The orchestrator passes `CODESIGN_IDENTITY`. Building once and then running
 with `SKIP_BUILD=1` also keeps an ad-hoc grant alive, since nothing is
 re-signed.
 
+A paid developer account is not required for a stable identity. A self-signed
+code-signing certificate made in Keychain Access, trusted on that machine only,
+is enough to keep the grant across rebuilds, and its name is what goes in
+`CODESIGN_IDENTITY`. That is optional lab-host setup, not part of building the
+runner.
+
 The app has no entitlements and is therefore not sandboxed; a sandboxed build
 would additionally need `com.apple.security.device.bluetooth`.
 

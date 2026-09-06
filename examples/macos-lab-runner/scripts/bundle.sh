@@ -68,6 +68,6 @@ PLIST
 # ad-hoc signature changes on every rebuild, which drops the Bluetooth grant;
 # CODESIGN_IDENTITY is how the lab host avoids that.
 IDENTITY="${CODESIGN_IDENTITY:--}"
-codesign --force --sign "$IDENTITY" "$APP" >&2
+codesign --force --sign "$IDENTITY" --identifier "$BUNDLE_ID" "$APP" >&2
 
 echo "$APP/Contents/MacOS/$BINARY_NAME"
