@@ -275,6 +275,9 @@ final class BarnardEngineParticipantRelayTests: XCTestCase {
     XCTAssertEqual(h.engine.eventInfoValueForRead(), h.engine.relayContainerForServing())
 
     // Once this device serves its own event-info value, that wins.
+    // The joined event code lives in UserDefaults.standard, which every other
+    // engine in this process shares, so it must be cleared again.
+    defer { h.engine.leaveEvent() }
     h.engine.joinEvent("BARNARD-RELAY-TEST")
     try h.engine.configureEventInfoServing(
       organizerDesignated: true, eventActiveForDiscovery: true, eventDisplayName: "Own Event"

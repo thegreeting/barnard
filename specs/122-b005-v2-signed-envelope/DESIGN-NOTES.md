@@ -271,6 +271,84 @@ boundary only delivers them.
 
 ---
 
+## 0.2c The relay driving boundary — what the engine owns and what the host owns
+
+*Recorded when the relay driving landed (barnard#187, ships in 0.8.0).*
+
+0.7.0 shipped `BarnardParticipantRelay` as a pure type with its own unit tests and no caller.
+Nothing fed it observations and nothing served what it elected, so spec 134 existed as a library
+and not as a behaviour. 0.8.0 closes both ends.
+
+**Feed side.** Every receipt the §0.2b path produces is offered to a relay instance owned by the
+engine, followed immediately by `advance()`. Two filters sit in front of it, and they are
+deliberately at different layers:
+
+1. *The engine's filter.* Only a `radioSelfVerified` receipt is offered. An `unverified` container
+   is never handed to the relay at all, and v1 hint traffic cannot reach it because the `0x03`
+   dispatch in §0.2b happens first — a v1 payload never becomes a receipt.
+2. *The relay's filter.* The relay's `BarnardRelayVerifier` is host-supplied, and only a
+   `registryVerified` answer unlocks re-broadcast. This is spec 134 step 3: relay requires the
+   authoritative on-chain definition, which the SDK cannot reach. The relaxation in the 2026-09-05
+   erratum applies to candidate *display*, not to relay.
+
+So "verified enough to relay" is strictly stronger than "verified enough to show", and the two
+gates live in the two places that can actually answer them. A host that configures no verifier gets
+an inert relay: observations are dropped and nothing is ever served.
+
+**Serve side.** The relay's output sink caches the container it elected. The B005 read at offset
+zero now goes through one internal chooser on each platform, which advances the relay first and
+then picks:
+
+1. this device's own event-info value from `BarnardEventInfoCodec.payloadIfServing`, if it has one;
+2. otherwise the relayed container;
+3. otherwise the read is refused, exactly as before.
+
+**Precedence is a spec gap we closed conservatively.** Spec 134 never says what a device that is
+both a direct source and an elected relay should serve. Own-value-first is the reading that cannot
+lose information: an organizer-designated device demoting itself to a forwarder would remove a
+hop-zero source from the neighbourhood, while the reverse only delays a relayed copy that other
+participants can still carry. The spec's one-payload-at-a-time rule rules out serving both.
+
+Note what this precedence does *not* do: the own value is still the v1 `BarnardEventInfoCodec`
+payload, so an organizer-designated device does not yet serve a hop-zero v2 container. That is a
+pre-existing gap in the emission side, untouched here.
+
+**Lifecycle.** `hostStop()` is terminal on the relay type, so the engine drops the instance rather
+than reusing it and builds a fresh one on the next observation. Stopping Scan or Advertise tears it
+down, which is what spec 134's "Resume MUST recheck every guard instead of restoring an old lease"
+requires. The engine keeps the injected verifier, clock, ENIN source and seed across a teardown;
+only the state machine is discarded.
+
+**Decisions on the host surface.** A new `BarnardEvent` case (`relayDecision` / `RelayDecision`)
+carries the decision, the payload digest, the served hop, a reason and the triggering peer. The
+digest is the envelope identity — a value already derivable from bytes on the wire — chosen over
+the peer handle deliberately: §b.5 forbids exposing handles, `r`, or the election secret, and a
+decision event is a public surface.
+
+The relay's sink protocol reports only start and stop, so `broadcast`, `keep` and `stop` are
+derived at the engine. A lease renewal in the state machine is a stop followed by a fresh election,
+with the relay genuinely not serving in between, so there is no observable "keep" distinct from
+re-election; the engine names a start whose digest matches the last served one a `keep`, and it is
+always preceded by a `stop`. The reason string comes from the engine's own call site
+(`elected`, `renewed`, `lease_ended`, `host_stop`, `definition_invalidated`) rather than from the
+relay, which carries none.
+
+**Testability.** The relay's clock and ENIN source are injectable through
+`configureParticipantRelay` and default to the engine's uptime clock and its own B004 ENIN. Without
+that, no test could step a 30-second decision epoch or a 15-second contention delay, and the
+relay's ENIN would disagree with the one the receive-path seam is given — the conformance envelopes
+sit at ENIN ~6.0e6, so every observation would be rejected as out of window.
+
+The shared vectors are driven through the engine seam on both platforms, but not byte-for-byte:
+`relay-hop-dedup.txt` carries a four-byte placeholder envelope that the real verifier rejects, so
+it can never become a receipt. The engine tests assert the relationships that file encodes —
+container layout, served hop = observed minimum + 1, no output at hop two, the 32-handle cap, the
+12-ENIN lifetime — using the signed conformance envelope from `b005-envelope-v2.txt`, and check
+separately that the placeholder containers agree with the same container encoder the relay serves
+through.
+
+---
+
 ## (a) The #122 envelope v2 wire format and verification path
 
 ### a.1 Container (fixed by spec 134, restated for makers)

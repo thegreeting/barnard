@@ -301,6 +301,7 @@ class BarnardEngineParticipantRelayTest {
 
         // Once this device serves its own event-info value, that wins.
         h.engine.joinEvent("BARNARD-RELAY-TEST")
+        // The joined event code is persisted, so restore anonymous mode below.
         h.engine.configureEventInfoServing(
             organizerDesignated = true,
             eventActiveForDiscovery = true,
@@ -310,6 +311,7 @@ class BarnardEngineParticipantRelayTest {
         assertNotNull(own)
         assertFalse(own!!.contentEquals(h.engine.relayContainerForServing()))
         assertEquals("the own value is the unchanged v1 event-info payload", 0x01, own[0].toInt())
+        h.engine.leaveEvent()
     }
 
     @Test
