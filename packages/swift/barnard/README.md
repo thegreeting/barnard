@@ -3,6 +3,31 @@
 First-class Swift Package Manager library for native iOS apps to adopt the
 Barnard protocol without a Flutter runtime dependency (barnard#56).
 
+## Platform support
+
+The package declares iOS 14 and macOS 10.15. The macOS floor is set by
+`CBManager.authorization`, which the engine's Bluetooth permission check uses.
+
+macOS is a full real-radio platform: `BarnardEngine` scans as a Central and
+advertises as a Peripheral over CoreBluetooth exactly as it does on iOS, and
+the whole package builds and tests natively with `swift build` / `swift test`.
+Two differences are worth knowing before you ship a macOS host:
+
+- **No background-advertising lifecycle handling.** On iOS the engine observes
+  `UIApplication` activation notifications and bounces advertising when the app
+  returns to the foreground, because iOS demotes the advertised service UUID
+  into the AdvData overflow area while backgrounded (issue #45). macOS does not
+  do that, so the observers are absent and advertising simply continues.
+- **`openAppSettings()` is a no-op.** macOS has no per-app settings URL. Direct
+  the user to System Settings > Privacy & Security > Bluetooth yourself.
+
+Bluetooth permission on macOS is granted per application, and it has to be
+granted once to a signed app bundle. On one development Mac a bare unsigned
+executable linking this package received no `centralManagerDidUpdateState`
+callback at all, so permission never became determinable. That is an
+observation from a single machine and the cause is unconfirmed; if you hit it,
+run the code from a signed `.app` bundle.
+
 ## Installation
 
 Add as a Swift Package dependency (local path shown; publish via a Git tag

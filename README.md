@@ -73,8 +73,9 @@ packages/
 ```
 
 - `packages/swift/barnard/` is a Swift Package Manager library for iOS 14 and
-  later. It exists so native iOS apps can use Barnard without a Flutter runtime;
-  its shared Flutter-free sources are the canonical Swift origins.
+  later and macOS 10.15 and later. It exists so native iOS and macOS apps can
+  use Barnard without a Flutter runtime; its shared Flutter-free sources are the
+  canonical Swift origins. See its README for the macOS support scope.
 - `packages/android/barnard/` is a Gradle library for Android API 24 and later.
   It exists so native Android apps can use typed Kotlin APIs without a Flutter
   or React Native runtime; its shared Flutter-free sources are the canonical
