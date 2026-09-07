@@ -10,7 +10,11 @@ PRs, resolved issues, and `specs/` changes by
 `.github/workflows/release-notes.yml`; the entries here are the input the release
 driver draws the drafted summary from (see `RELEASING.md`).
 
-## Unreleased — 0.8.0
+## Unreleased — 0.9.0
+
+Nothing yet.
+
+## 0.8.0 — 2026-09-07
 
 ### Breaking
 
@@ -40,9 +44,7 @@ driver draws the drafted summary from (see `RELEASING.md`).
   Peripheral there; the iOS-only foreground-return advertising restart is
   absent (macOS does not background-demote the advertised service UUID) and
   `openAppSettings()` is a documented no-op. Non-breaking: no iOS behaviour,
-  wire format, or stored data changed. This entry is written under 0.8.0
-  because that is the open section; it may ship in a later release, and the
-  release driver will place it. (barnard#192)
+  wire format, or stored data changed. (barnard#192)
 - **A headless macOS lab runner**, `examples/macos-lab-runner`. It hosts
   `BarnardEngine` in a run loop with no window, prints every event as a JSON
   line plus plain `BARNARD_MACHOST_*` markers on stdout, and exits with a code
